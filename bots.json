@@ -1,0 +1,4 @@
+{
+    "TestBot": {"envtoken": "TestBot_TOKEN"},
+    "GPTBot": {"envtoken": "GPTBot_TOKEN"}
+}
