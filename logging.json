@@ -10,13 +10,14 @@
     "handlers": {
         "default": {
             "class": "logging.FileHandler",
+            "level": "INFO",
             "formatter": "standard",
-            "filename": "logging/{date}_manager.log",
+            "filename": "{date}_{name}.log",
             "mode": "a"
         }
     },
     "root": {
-        "handlers": ["default"],
-        "level": "INFO"
+        "level": "INFO",
+        "handlers": ["default"]
     }
 }

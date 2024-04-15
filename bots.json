@@ -1,4 +1,12 @@
 {
-    "TestBot": {"envtoken": "TestBot_TOKEN"},
-    "GPTBot": {"envtoken": "GPTBot_TOKEN"}
+    "TestBot": {
+        "envtoken": "TestBot_TOKEN",
+        "type": "TestBot",
+        "commands": ["hello", "goodbye"]
+    },
+    "GPTBot": {
+        "envtoken": "GPTBot_TOKEN",
+        "type": "GPTBot",
+        "commands": ["hello", "goodbye", "chat"]
+    }
 }
