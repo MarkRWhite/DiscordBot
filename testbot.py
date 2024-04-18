@@ -1,4 +1,5 @@
 import argparse
+import logging
 import discord
 from discord.ext import commands
 from botbase import BotBase
@@ -9,9 +10,10 @@ class TestBot(BotBase):
     """
     def __init__(self, token_env_var, log_file):
         super().__init__(token_env_var, log_file)
+        logging.info("Bot initialized.")
 
     @commands.command()
-    async def echo(self, ctx, *, message):
+    async def echo(self, ctx, *, message=None):
         """
         Respond with the same message that was received.
         """
@@ -25,7 +27,7 @@ class TestBot(BotBase):
         self.bot.add_command(self.echo)
 
     async def on_ready(self):
-        print(f'{self.__class__.__name__} has connected to Discord!')
+        logging.info(f'{self.__class__.__name__} has connected to Discord!')
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Run a TestBot.')

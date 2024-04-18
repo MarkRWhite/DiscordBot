@@ -1,4 +1,5 @@
 import argparse
+import logging
 import discord
 from discord.ext import commands
 from botbase import BotBase
@@ -9,6 +10,7 @@ class GPTBot(BotBase):
     """
     def __init__(self, token_env_var, log_file):
         super().__init__(token_env_var, log_file)
+        logging.info("Bot initialized.")
 
     @commands.command()
     async def chat(self, ctx, *, message):

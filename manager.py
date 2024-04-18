@@ -1,7 +1,10 @@
 import os
 import subprocess
+import threading
 import logging
 import logging.config
+import shutil
+import time
 from datetime import datetime
 import tkinter as tk
 from tkinter import ttk
@@ -69,10 +72,18 @@ class Manager:
         return log_file_path
 
     def initialize_gui(self):
-        """Initialize the GUI. Create a new Tk root window and add a Start Bot, Stop Bot, and Open Log button for each bot."""
+        """Initialize the GUI. Create a new Tk root window and add a Start Bot, Stop Bot, Open Bot Log, and Open Manager Log button for each bot."""
         self.root = tk.Tk()  # Initialize the root window here
+        #self.root.protocol("WM_DELETE_WINDOW", lambda: threading.Thread(target=self.cleanup).start())
         self.root.title("Bot Manager")  # Set the window title
         self.root.geometry('400x400')  # Set initial window size
+
+        # Add a button to open the manager log
+        open_manager_log_button = tk.Button(self.root, text="Open Manager Log", command=self.open_manager_log)
+        open_manager_log_button.pack(side="top")
+
+        clear_logs_button = tk.Button(self.root, text="Clear Logs", command=self.clear_logs)
+        clear_logs_button.pack(side="top")
 
         # Create a canvas and a vertical scrollbar for scrolling
         canvas = tk.Canvas(self.root)
@@ -107,6 +118,37 @@ class Manager:
             for j, action in enumerate(self.actions):
                 button = tk.Button(frame, text=action["name"], command=lambda bot_name=bot_name, action=action: action["method"](bot_name))
                 button.grid(row=0, column=j+1)
+                
+    def open_manager_log(self):
+        """Open the manager log file in Notepad++ or Notepad."""
+        today = datetime.now().strftime('%Y-%m-%d')  # Get today's date
+        manager_log_file = os.path.join('logging', f'{today}_manager.log')  # Use today's date to create the filename
+        if not os.path.exists(manager_log_file):
+            logging.error(f"Manager log file does not exist.")
+            return
+        try:
+            subprocess.Popen(['notepad++.exe', manager_log_file])
+            logging.info(f"Opened manager log in Notepad++")
+        except FileNotFoundError:
+            try:
+                subprocess.Popen(['notepad.exe', manager_log_file])
+                logging.info(f"Opened manager log in Notepad")
+            except FileNotFoundError:
+                logging.error(f"Failed to open manager log file. Please ensure that Notepad or Notepad++ is installed.")
+
+    def clear_logs(self):
+            """Clear all log files in the logging directory."""
+            log_dir = 'logging'
+            for filename in os.listdir(log_dir):
+                file_path = os.path.join(log_dir, filename)
+                try:
+                    if os.path.isfile(file_path) or os.path.islink(file_path):
+                        os.unlink(file_path)
+                    elif os.path.isdir(file_path):
+                        shutil.rmtree(file_path)
+                except Exception as e:
+                    logging.error(f'Failed to delete {file_path}. Reason: {e}')
+            logging.info("Logs cleared.")
 
     def start_bot(self, bot_name):
         try:
@@ -120,9 +162,12 @@ class Manager:
                 bot = GPTBot(env_token_key, bot_log_file)
             else:
                 raise ValueError(f"Unknown bot type: {bot_type}")
+ 
+            # Start the bot in a new thread
+            thread = threading.Thread(target=bot.run)
+            self.bot_processes[bot_name] = (bot, thread)
+            thread.start()
 
-            self.bot_processes[bot_name] = bot
-            bot.run()
             logging.info(f"Started bot {bot_name}")
         except Exception as e:
             logging.error(f"Failed to start bot {bot_name}. Error: {e}")
@@ -130,9 +175,26 @@ class Manager:
     def stop_bot(self, bot_name):
         """Stop a bot by terminating its process."""
         if bot_name in self.bot_processes:
-            bot = self.bot_processes[bot_name]
-            bot.stop()
-            del self.bot_processes[bot_name]
+            bot = self.bot_processes[bot_name][0]
+            bot.stop(self.bot_stopped_callback(bot_name)) # Call the bot_stopped_callback function when the bot finishes stopping
+            
+
+    def cleanup(self):
+        for bot_name, (bot, thread) in list(self.bot_processes.items()):  # Make a copy of the items
+            bot.stop(self.bot_stopped_callback(bot_name))
+            if thread is None:
+                del self.bot_processes[bot_name]
+            
+        self.root.destroy()
+
+    def bot_stopped_callback(self, bot_name):
+        thread = self.bot_processes[bot_name][1]
+        thread.join(timeout=5) # Wait for the bot thread to finish
+        if thread.is_alive():
+            logging.error(f"Failed to stop the bot thread within the timeout period.")
+        else:
+            logging.info(f"Bot {bot_name} has stopped.")  # log that the bot has stopped after joining the bot thread
+            self.bot_processes[bot_name] = (self.bot_processes[bot_name][0], None)  # Set the thread to None to indicate that it has stopped
 
     def open_log(self, bot_name):
         """Open the log file for a bot in Notepad++ or Notepad."""
