@@ -205,18 +205,44 @@ class Manager:
                 )
 
     def clear_logs(self):
-        """Clear all log files in the logging directory."""
+        """Delete all log files."""
         log_dir = "logging"
+        if not os.path.exists(log_dir):
+            return
+
+        # Get the root logger
+        logger = logging.getLogger()
+
+        # Load the logging configuration
+        with open("logging.json", "r") as f:
+            log_config = json.load(f)
+
         for filename in os.listdir(log_dir):
-            file_path = os.path.join(log_dir, filename)
             try:
-                if os.path.isfile(file_path) or os.path.islink(file_path):
-                    os.unlink(file_path)
-                elif os.path.isdir(file_path):
-                    shutil.rmtree(file_path)
+                # Stop the logger
+                log_file_path = os.path.abspath(os.path.join(log_dir, filename))
+                for handler in logger.handlers[:]:  # Make a copy of the list because we're modifying it while iterating
+                    if isinstance(handler, logging.handlers.TimedRotatingFileHandler) and handler.baseFilename == log_file_path:
+                        handler.close()
+                        logger.removeHandler(handler)
+
+                # Delete the file
+                os.remove(log_file_path)
+
+                if os.path.exists(log_file_path):
+                    logging.error(f"Failed to delete {filename}. Validate the file is closed in notepad.")
+
+                # Create a new formatter with the loaded configuration
+                new_handler = logging.handlers.TimedRotatingFileHandler(log_file_path, when="midnight")
+                formatter_config = log_config["formatters"]["standard"]
+                new_handler.setFormatter(logging.Formatter(formatter_config["format"], datefmt=formatter_config["datefmt"]))
+
+                logger.addHandler(new_handler)
+
             except Exception as e:
-                logging.error(f"Failed to delete {file_path}. Reason: {e}")
-        logging.info("Logs cleared.")
+                logging.error(f"Failed to delete {filename}. Reason: {e}")
+        
+        logging.info("All log files have been deleted.")
 
     def start_bot(self, bot_name):
         # Check if the bot is already running
