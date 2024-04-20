@@ -97,7 +97,7 @@ class Manager:
                 bots_config = json.load(f)
             return bots_config
         except Exception as e:
-            logging.error(f"Failed to load bot configuration: {e}")v
+            logging.error(f"Failed to load bot configuration: {e}")
             return None
 
     def get_bot_log_file(self, bot_instance):
