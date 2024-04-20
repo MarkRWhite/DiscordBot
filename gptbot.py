@@ -10,8 +10,8 @@ class GPTBot(BotBase):
     A subclass of Bot that implements ChatGPT bot specific commands.
     """
 
-    def __init__(self, token_env_var, log_file):
-        super().__init__(token_env_var, log_file)
+    def __init__(self, token_env_var, log_file, server_address):
+        super().__init__(token_env_var, log_file, server_address)
         logging.info("Bot initialized.")
 
     @commands.command()
@@ -34,10 +34,15 @@ class GPTBot(BotBase):
         Initialize the bot commands.
         """
         super().initialize_bot_commands()
-        self.bot.add_command(self.chat)
 
     async def on_ready(self):
         print(f"{self.__class__.__name__} has connected to Discord!")
+
+    def shutdown(self):
+        """
+        Shutdown the bot.
+        """
+        super().shutdown()
 
     def process_message(self, message):
         """
@@ -47,13 +52,18 @@ class GPTBot(BotBase):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Run a GPTBot.")
+    parser = argparse.ArgumentParser(description="Run a TestBot.")
     parser.add_argument(
         "--token-env-var",
         help="The name of the environment variable that stores the bot token.",
     )
     parser.add_argument("--log", help="The file to log output to.")
+    parser.add_argument("--server-address", help="The server address to connect to.")
     args = parser.parse_args()
 
-    bot = GPTBot(token_env_var=args.token_env_var, log_file=args.log)
+    bot = GPTBot(
+        token_env_var=args.token_env_var,
+        log_file=args.log,
+        server_address=args.server_address,
+    )
     bot.run()

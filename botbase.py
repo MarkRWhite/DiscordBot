@@ -6,6 +6,7 @@ import signal
 import socket
 import sys
 import time
+import datetime
 import threading
 from abc import ABC, abstractmethod
 
@@ -17,62 +18,77 @@ import dotenv
 
 class BotBase(ABC):
 
-    def __init__(self, token_env_var, log_file, server_address):
-        self.token_env_var = token_env_var
-        self.log_file = log_file
+    def __init__(self, config, server_address):
+        self.config = config
         self.server_address = server_address
+        self.setup_logging() # Run this before anything that might log
 
-        if not self.log_file:
-            raise ValueError("log_file argument is required.")
-        if not token_env_var:
+        if not self.config.get("token_env_var"):
             raise ValueError("token_env_var argument is required.")
         if not server_address:
             raise ValueError("server_address argument is required.")
 
         # Setup communication with the manager
-        self.client_socket = self.create_socket()
-        self.listening = False
-        self.listening_thread = threading.Thread(target=self.listen_for_commands)
-        self.lock = threading.Lock()
+        self.manager_socket = self.create_socket()
+        self.manager_listening = False
+        self.manager_listening_thread = threading.Thread(target=self.manager_listen)
+        self.retry_interval = 5  # Seconds - How often we try to reconnect to the manager
+        self.lock = threading.Lock() # TODO: Implement thread locking for events on other threads that touch the bot object properties
 
         dotenv.load_dotenv()  # Load environment variables from .env file
-        self.TOKEN = os.getenv(token_env_var)
+        self.TOKEN = os.getenv(self.config.get("token_env_var"))
         if not self.TOKEN:
-            raise ValueError(f"Environment variable {token_env_var} is not set.")
+            raise ValueError(f"Environment variable {self.config.get("token_env_var")} is not set.")
 
-        self.setup_logging()
         self.setup_discord()
 
     def create_socket(self):
-        client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        client_socket.connect(self.server_address)
-        return client_socket
+        socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        socket.connect(self.server_address)
+        return socket
 
     def run(self):
         self.running = True
-        self.start_listener()
+        self.start_manager_listener() # Start the listening thread for communication with the manager
+        self.discord_run()
+
+        # Main Run Loop
         while self.running:
-            # Run the bot
-            pass
+            self.main_loop()
+
+            # Restart communication with the manager
+            current_time = time.time()
+            if not self.manager_listening_thread.is_alive():
+                self.start_manager_listener()
+                self.last_retry_time = current_time
+
+            time.sleep(0.5)
+
+        # Wait for any process threads to exit here before exiting the process
+        if self.manager_listening_thread.is_alive():
+            self.manager_listening = False
+        self.manager_listening_thread.join()  # wait for the listening thread to exit
 
         logging.info(f"Bot is stopping.")
 
-    def start_listener(self):
-        self.listening = True
-        self.listening_thread.start()
+    def main_loop(self):
+        pass # TODO: Main loop code actions go here
 
-    def listen_for_commands(self):
-        while self.listening:
-            time.sleep(0.1)
+    def start_manager_listener(self):
+        self.manager_listening = True
+        self.manager_listening_thread.start()
 
+    def manager_listen(self):
+        while self.manager_listening:
             try:
                 # Receive message from manager
-                message_bytes = self.socket.recv(1024)
+                message_bytes = self.manager_socket.recv(1024)
             except socket.error as e:
                 logging.error(f"Socket error: {e}")
                 break
 
             if not message_bytes:
+                time.sleep(0.5)
                 continue
 
             message = json.loads(message_bytes.decode("utf-8"))
@@ -84,16 +100,16 @@ class BotBase(ABC):
     def process_message(self, message):
         # If a stop command is received, stop the bot
         if message.get("command") == "stop":
-            self.running = False
-            self.listening = False
+            self.shutdown()
 
     def setup_logging(self):
         with open("logging.json", "r") as f:
             config = json.load(f)
-        config["handlers"]["default"]["filename"] = self.log_file
+        date = datetime.datetime.now().strftime("%Y-%m-%d")
+        config["handlers"]["default"]["filename"] = f"{date}_{self.__class__.__name__}.log"
         logging.config.dictConfig(config)
 
-    def setup_discord(self, token):
+    def setup_discord(self):
         intents = discord.Intents.default()
         intents.message_content = True
         self.bot = commands.Bot(command_prefix="!", intents=intents)
@@ -102,12 +118,18 @@ class BotBase(ABC):
     @abstractmethod
     def initialize_bot_commands(self):
         self.commands = []
-        # Default commands
+        # Add defaults
         self.commands.append("hello")
-
         self.bot.add_listener(self.on_ready)
-        for command in self.commands:
-            self.bot.add_command(getattr(self, command))
+        
+        # Add custom commands from config
+        custom_commands = self.config.get('commands', [])
+        for command in custom_commands:
+            if hasattr(self, command):
+                self.commands.append(command)
+                self.bot.add_command(getattr(self, command))
+            else:
+                logging.warning(f"Command {command} not found in bot methods.")
 
     @abstractmethod
     async def on_ready(self):
@@ -117,6 +139,15 @@ class BotBase(ABC):
     async def hello(self, ctx):
         await ctx.send("Hello!")
 
+    @abstractmethod
+    def shutdown(self):
+        # TODO: Add thread locking for the shutdown process
+        self.running = False
+        self.manager_listening = False
+        self.manager_socket.shutdown(socket.SHUT_RDWR)  # shutdown the socket
+        self.manager_socket.close()  # close the socket
+        self.discord_stop()
+
     def discord_run(self):
         logging.info("Starting the bot.")
         self.bot_thread = threading.Thread(
@@ -124,7 +155,7 @@ class BotBase(ABC):
         )  # create a new thread to run the bot
         self.bot_thread.start()  # start the thread
 
-    def discord_stop(self, callback=None):
+    def discord_stop(self):
         if not self.bot.loop.is_closed():
             logging.info("Stopping the bot.")
             self.bot.loop.create_task(self.bot.close())
@@ -134,6 +165,3 @@ class BotBase(ABC):
 
         if self.bot_thread.is_alive():
             logging.error("Failed to stop the bot thread within the timeout period.")
-
-        if callback is not None:
-            callback()

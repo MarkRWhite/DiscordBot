@@ -10,8 +10,8 @@ class TestBot(BotBase):
     A subclass of BotBase that implements TestBot specific commands.
     """
 
-    def __init__(self, token_env_var, log_file):
-        super().__init__(token_env_var, log_file)
+    def __init__(self, token_env_var, log_file, server_address):
+        super().__init__(token_env_var, log_file, server_address)
         logging.info("Bot initialized.")
 
     @commands.command()
@@ -26,10 +26,15 @@ class TestBot(BotBase):
         Initialize the bot commands.
         """
         super().initialize_bot_commands()
-        self.bot.add_command(self.echo)
 
     async def on_ready(self):
         logging.info(f"{self.__class__.__name__} has connected to Discord!")
+
+    def shutdown(self):
+        """
+        Shutdown the bot.
+        """
+        super().shutdown()
 
     def process_message(self, message):
         """
@@ -45,7 +50,12 @@ if __name__ == "__main__":
         help="The name of the environment variable that stores the bot token.",
     )
     parser.add_argument("--log", help="The file to log output to.")
+    parser.add_argument("--server-address", help="The server address to connect to.")
     args = parser.parse_args()
 
-    bot = TestBot(token_env_var=args.token_env_var, log_file=args.log)
+    bot = TestBot(
+        token_env_var=args.token_env_var,
+        log_file=args.log,
+        server_address=args.server_address,
+    )
     bot.run()

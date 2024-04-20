@@ -9,11 +9,14 @@
     },
     "handlers": {
         "default": {
-            "class": "logging.FileHandler",
+            "class": "logging.handlers.TimedRotatingFileHandler",
             "level": "INFO",
             "formatter": "standard",
             "filename": "{date}_{name}.log",
-            "mode": "a"
+            "when": "midnight",
+            "interval": 1,
+            "backupCount": 10,
+            "encoding": "utf8"
         },
         "console": {
             "class": "logging.StreamHandler",
@@ -23,6 +26,6 @@
     },
     "root": {
         "level": "INFO",
-        "handlers": ["default"]
+        "handlers": ["default", "console"]
     }
 }
