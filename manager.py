@@ -20,8 +20,10 @@ from gptbot import GPTBot
 class Manager:
     def __init__(self):
         self.bot_processes = {}
+        self.client_threads = []
         self.shutdown = False
         # Configure server socket for communication with bots
+        self.client_sockets = {} # Store client sockets for each bot
         self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.server_socket.bind(('localhost', 5000))  # Bind to localhost on port 5000
         self.server_thread = threading.Thread(target=self.start_server)
@@ -40,7 +42,7 @@ class Manager:
         self.server_socket.settimeout(1)
         while not self.shutdown:
             try:
-                client_socket, address = self.server_socket.accept() # Accept incoming connections (Blocking)
+                client_socket, address = self.server_socket.accept() # Accept incoming connections (blocking call)
                 client_thread = threading.Thread(target=self.handle_connection, args=(client_socket,))
                 client_thread.start()
             except socket.timeout:
@@ -48,11 +50,18 @@ class Manager:
 
     def handle_connection(self, client_socket):
         client_socket.settimeout(1)  # Set a timeout of 1 second
+        bot_name = None
         while not self.shutdown:
             try:
                 message = client_socket.recv(1024)
                 if not message:
                     break
+                
+                if not bot_name: # If we don't have a bot name yet, get it from the first message
+                    bot_name = json.loads(message.decode("utf-8")).get("bot_name")
+                    self.client_sockets[bot_name] = client_socket
+                    logging.info(f"Connected to bot {bot_name}")
+
                 # TODO: Process messages from the client bots here
             except socket.timeout:
                 continue
@@ -100,12 +109,12 @@ class Manager:
             logging.error(f"Failed to load bot configuration: {e}")
             return None
 
-    def get_bot_log_file(self, bot_instance):
+    def get_bot_log_file(self, bot_name):
         """Get the most recent log file for a bot."""
         log_dir = "logging"
         if not os.path.exists(log_dir):
             os.makedirs(log_dir, exist_ok=True)
-        log_files = [f for f in os.listdir(log_dir) if bot_instance in f]
+        log_files = [f for f in os.listdir(log_dir) if bot_name in f]
         if not log_files:
             return None
         latest_log_file = max(log_files, key=lambda f: os.path.getmtime(os.path.join(log_dir, f)))
@@ -154,23 +163,22 @@ class Manager:
         ]
 
         # Create a frame for each bot
-        for i, bot_instance in enumerate(self.bot_config):
+        for i, bot in enumerate(self.bot_config):
             frame = tk.Frame(scrollable_frame)
             frame.grid(
                 row=i, column=0, padx=10, pady=10
             )  # Add padding and place the frame in the grid
 
             # Create a label for the bot name
-            label = tk.Label(frame, text=bot_instance, anchor="e", width=20)
+            label = tk.Label(frame, text=bot['name'], anchor="e", width=20)
             label.grid(row=0, column=0)
-
             # Create buttons for each action and map the event to the corresponding action method
             for j, action in enumerate(self.actions):
                 button = tk.Button(
                     frame,
                     text=action["name"],
-                    command=lambda bot_instance=bot_instance, action=action: action["method"](
-                        bot_instance
+                    command=lambda bot=bot, action=action: action["method"](
+                        bot['name']
                     ),
                 )
                 button.grid(row=0, column=j + 1)
@@ -210,57 +218,43 @@ class Manager:
                 logging.error(f"Failed to delete {file_path}. Reason: {e}")
         logging.info("Logs cleared.")
 
-    def start_bot(self, bot_instance):
+    def start_bot(self, bot_name):
         # Check if the bot is already running
-        if bot_instance in self.bot_processes:
-            logging.warning(f"Bot {bot_instance} is already running.")
+        if bot_name in self.bot_processes:
+            logging.warning(f"Bot {bot_name} is already running.")
+            return
+        
+        bot_config = next((bot for bot in self.bot_config if bot['name'] == bot_name), None)
+        if bot_config is None:
+            logging.error(f"No configuration found for bot {bot_name}")
             return
 
         # Start the bot in a new process
         process = multiprocessing.Process(
             target=self.run_bot_process,
-            args=(self.bot_config[bot_instance], self.server_socket.getsockname()),
+            args=(bot_config, self.server_socket.getsockname()),
         )
         process.start()
-        self.bot_processes[bot_instance] = process
+        self.bot_processes[bot_name] = process
 
-    def send_message(self, bot_instance, message):
-        message_bytes = json.dumps(message).encode("utf-8")
-        self.bot_sockets[bot_instance].sendall(message_bytes)
-
-    def receive_messages(self, bot_instance):
-        while not self.shutdown:
-            message_bytes = self.bot_sockets[bot_instance].recv(1024)
-
-            # If no data is received, the client has closed the connection
-            if not message_bytes:
-                time.sleep(0.5)
-                break
-
-            # Convert the message from bytes to JSON
-            message = json.loads(message_bytes.decode("utf-8"))
-
-            # Process the message
-            print(f"Received message: {message}")
-
-    def run_bot_process(self, config, bot_log_file, server_address):
+    def run_bot_process(self, config, server_address):
         # Create the bot (this method is called in another thread so the bot can run without blocking)
         bot_type = config.get("type")
 
         if bot_type == "TestBot":
-            bot = TestBot(config, bot_log_file, server_address)
+            bot = TestBot(config, server_address)
         elif bot_type == "GPTBot":
-            bot = GPTBot(config, bot_log_file, server_address)
+            bot = GPTBot(config, server_address)
         else:
             raise ValueError(f"Unknown bot type: {bot_type}")
         bot.run()
 
     def stop_bot(self, bot_name):
         """Stop a bot by sending a stop message over the socket."""
-        if bot_name in self.bot_sockets:
+        if bot_name in self.client_sockets:
             message = {"command": "stop"}
             message_bytes = json.dumps(message).encode("utf-8")
-            self.bot_sockets[bot_name].sendall(message_bytes)
+            self.client_sockets[bot_name].sendall(message_bytes)
 
     def cleanup(self):
         """Cleanup function to stop all bots and close the GUI."""

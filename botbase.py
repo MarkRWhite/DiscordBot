@@ -30,8 +30,8 @@ class BotBase(ABC):
 
         # Setup communication with the manager
         self.manager_socket = self.create_socket()
+        self.send_connected_message() # TODO: Make a generic send_message method that can be used for all messages
         self.manager_listening = False
-        self.manager_listening_thread = threading.Thread(target=self.manager_listen)
         self.retry_interval = 5  # Seconds - How often we try to reconnect to the manager
         self.lock = threading.Lock() # TODO: Implement thread locking for events on other threads that touch the bot object properties
 
@@ -43,9 +43,14 @@ class BotBase(ABC):
         self.setup_discord()
 
     def create_socket(self):
-        socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        socket.connect(self.server_address)
-        return socket
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s.settimeout(1)
+            s.connect(self.server_address)
+            return s
+        except Exception as e:
+            logging.error(f"Error creating socket: {e}")
+            return None
 
     def run(self):
         self.running = True
@@ -58,7 +63,7 @@ class BotBase(ABC):
 
             # Restart communication with the manager
             current_time = time.time()
-            if not self.manager_listening_thread.is_alive():
+            if not self.manager_listening_thread.is_alive() and self.manager_listening:
                 self.start_manager_listener()
                 self.last_retry_time = current_time
 
@@ -76,20 +81,25 @@ class BotBase(ABC):
 
     def start_manager_listener(self):
         self.manager_listening = True
+        self.manager_listening_thread = threading.Thread(target=self.manager_listen)  # Create a new thread instance
         self.manager_listening_thread.start()
+
+    def send_connected_message(self):
+        status_message = {"status": "connected", "bot_name": self.config.get("bot_name")} 
+        self.manager_socket.sendall(json.dumps(status_message).encode("utf-8")) # The manager uses this message to identify the connecting bot
 
     def manager_listen(self):
         while self.manager_listening:
             try:
-                # Receive message from manager
-                message_bytes = self.manager_socket.recv(1024)
+                message_bytes = self.manager_socket.recv(1024) # Receive message from manager
+            except socket.timeout:
+                continue
             except socket.error as e:
                 logging.error(f"Socket error: {e}")
                 break
 
             if not message_bytes:
-                time.sleep(0.5)
-                continue
+                break; # Connection was closed from server
 
             message = json.loads(message_bytes.decode("utf-8"))
             self.process_message(message)
