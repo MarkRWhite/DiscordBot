@@ -4,17 +4,18 @@ import platform
 import threading
 import logging
 import logging.config
+import time
+import psutil
 from datetime import datetime
 import tkinter as tk
 import json
-import dotenv
 import socket
 
 class Manager:
     def __init__(self):
         self.bot_processes = {}
         self.client_threads = []
-        self.shutdown = False
+        self.shuttingdown = False
         # Configure server socket for communication with bots
         self.client_sockets = {} # Store client sockets for each bot
         self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -22,8 +23,10 @@ class Manager:
         self.server_thread = threading.Thread(target=self.start_server)
         self.server_thread.start()
 
-        self.initialize_manager()
-        self.root.mainloop()  # Start the GUI
+        self.configure_logging()
+        self.bot_config = self.load_bot_configuration()  # Load bot configurations from config.json
+        self.initialize_gui()
+        self.root.mainloop()  # Start the GUI (BLOCKING)
         
         # Wait for any spawned threads to finish
         self.server_thread.join()
@@ -33,18 +36,24 @@ class Manager:
     def start_server(self):
         self.server_socket.listen()
         self.server_socket.settimeout(1)
-        while not self.shutdown:
+        while not self.shuttingdown:
             try:
                 client_socket, address = self.server_socket.accept() # Accept incoming connections (blocking call)
                 client_thread = threading.Thread(target=self.handle_connection, args=(client_socket,))
                 client_thread.start()
             except socket.timeout:
                 continue
+            except Exception as e:
+                logging.error(f"An error occurred: {e}")
+                break
+
+        # Close the server socket
+        self.server_socket.close()
 
     def handle_connection(self, client_socket):
         client_socket.settimeout(1)  # Set a timeout of 1 second
         bot_name = None
-        while not self.shutdown:
+        while not self.shuttingdown:
             try:
                 message = client_socket.recv(1024)
                 if not message:
@@ -59,12 +68,15 @@ class Manager:
             except socket.timeout:
                 continue
 
-    def initialize_manager(self):
-        """Load environment variables, configure logging, load bots, and initialize GUI."""
-        dotenv.load_dotenv()  # Load environment variables from .env file
-        self.configure_logging()
-        self.bot_config = self.get_bot_configuration()
-        self.initialize_gui()
+    def load_bot_configuration(self):
+        """Load bot configurations from config.json."""
+        try:
+            with open('config.json', 'r') as f:
+                config = json.load(f)
+            return config.get("Bots", {})
+        except Exception as e:
+            logging.error(f"Failed to load bot configuration: {e}")
+            return None
 
     def configure_logging(self):
         """Configure the logging system by reading the logging configuration from the logging.json file."""
@@ -87,21 +99,6 @@ class Manager:
         except Exception as e:
             logging.error(f"Failed to configure logging: {e}")
 
-    def get_bot_configuration(self):
-        """Load bot names and environment variable names from a JSON file."""
-        if not os.path.exists("bots.json"):
-            logging.error(
-                "Failed to load bot configuration: bots.json file does not exist."
-            )
-            return None
-        try:
-            with open("bots.json", "r") as f:
-                bots_config = json.load(f)
-            return bots_config
-        except Exception as e:
-            logging.error(f"Failed to load bot configuration: {e}")
-            return None
-
     def get_bot_log_file(self, bot_name):
         """Get the most recent log file for a bot."""
         log_dir = "logging"
@@ -116,7 +113,7 @@ class Manager:
     def initialize_gui(self):
         """Initialize the GUI. Create a new Tk root window and add a Start Bot, Stop Bot, Open Bot Log, and Open Manager Log button for each bot."""
         self.root = tk.Tk()  # Initialize the root window here
-        self.root.protocol("WM_DELETE_WINDOW", self.cleanup)
+        self.root.protocol("WM_DELETE_WINDOW", self.shutdown)
         self.root.title("Bot Manager")  # Set the window title
         self.root.geometry("400x400")  # Set initial window size
 
@@ -156,12 +153,11 @@ class Manager:
         ]
 
         # Create a frame for each bot
-        for i, bot in enumerate(self.bot_config):
+        for i, (bot_id, bot) in enumerate(self.bot_config.items()):
             frame = tk.Frame(scrollable_frame)
             frame.grid(
                 row=i, column=0, padx=10, pady=10
             )  # Add padding and place the frame in the grid
-
             # Create a label for the bot name
             label = tk.Label(frame, text=bot['name'], anchor="e", width=20)
             label.grid(row=0, column=0)
@@ -170,9 +166,7 @@ class Manager:
                 button = tk.Button(
                     frame,
                     text=action["name"],
-                    command=lambda bot=bot, action=action: action["method"](
-                        bot['name']
-                    ),
+                    command=lambda bot_id=bot_id, action=action: action["method"](bot_id)
                 )
                 button.grid(row=0, column=j + 1)
 
@@ -212,85 +206,153 @@ class Manager:
 
         for filename in os.listdir(log_dir):
             try:
-                # Stop the logger
                 log_file_path = os.path.abspath(os.path.join(log_dir, filename))
-                for handler in logger.handlers[:]:  # Make a copy of the list because we're modifying it while iterating
-                    if isinstance(handler, logging.handlers.TimedRotatingFileHandler) and handler.baseFilename == log_file_path:
-                        handler.close()
-                        logger.removeHandler(handler)
 
-                # Delete the file
-                os.remove(log_file_path)
+                # Get handlers which have a baseFilename set to log_file_path
+                handlers = [handler for handler in logger.handlers if isinstance(handler, logging.handlers.TimedRotatingFileHandler) and handler.baseFilename == log_file_path]
 
-                if os.path.exists(log_file_path):
-                    logging.error(f"Failed to delete {filename}. Validate the file is closed in notepad.")
+                if not handlers:
+                    # No handler is associated with the file, delete it immediately
+                    os.remove(log_file_path)
+                    if os.path.exists(log_file_path):
+                        logging.error(f"Failed to delete {filename}. Validate the file is closed in notepad.")
+                    continue
 
-                # Create a new formatter with the loaded configuration
-                new_handler = logging.handlers.TimedRotatingFileHandler(log_file_path, when="midnight")
-                formatter_config = log_config["formatters"]["standard"]
-                new_handler.setFormatter(logging.Formatter(formatter_config["format"], datefmt=formatter_config["datefmt"]))
+                for handler in handlers:
+                    # Remove the handler from the logger
+                    logger.removeHandler(handler)
+                    handler.close()
 
-                logger.addHandler(new_handler)
+                    # Check if the handler is properly closed
+                    if handler.stream is not None and not handler.stream.closed:
+                        logging.error(f"Failed to close the handler for {filename}.")
+                        continue
 
+                    # Delete the file
+                    os.remove(log_file_path)
+                    if os.path.exists(log_file_path):
+                        logging.error(f"Failed to delete {filename}. Validate the file is closed in notepad.")
+
+                    # Recreate a new handler with the loaded configuration
+                    new_handler = logging.handlers.TimedRotatingFileHandler(log_file_path, when="midnight")
+                    formatter_config = log_config["formatters"]["standard"]
+                    new_handler.setFormatter(logging.Formatter(formatter_config["format"], datefmt=formatter_config["datefmt"]))
+
+                    logger.addHandler(new_handler)
             except Exception as e:
                 logging.error(f"Failed to delete {filename}. Reason: {e}")
-        
-        logging.info("All log files have been deleted.")
 
-    def start_bot(self, bot_name):
-        # Check if the bot is already running
-        if bot_name in self.bot_processes:
-            logging.warning(f"Bot {bot_name} is already running.")
+    def start_bot(self, bot_id):
+        """Start a bot process."""
+        try:
+            with open('config.json', 'r') as f:
+                config = json.load(f)
+        except Exception as e:
+            logging.error(f"Failed to load configuration: {e}")
             return
 
-        # Find the bot configuration for the specified bot_name
-        bot_config = next((bot for bot in self.bot_config if bot['name'] == bot_name), None)
+        bot_config = config.get("Bots", {}).get(bot_id)
         if not bot_config:
-            logging.error(f"No configuration found for bot {bot_name}")
+            logging.error(f"Failed to start bot: {bot_id} configuration not found.")
             return
 
-        config_list = []
-        for key, value in bot_config.items():
-            config_list.append(f"{key}={value}")
-        logging.info(f"Starting bot {bot_name} with config: {config_list}")
+        if bot_id in self.bot_processes and self.bot_processes[bot_id].poll() is None:
+            logging.error(f"Bot {bot_id} is already running.")
+            return
 
-        # Start the bot in a new process
-        if platform.system() == 'Windows':
-            bot_process = subprocess.Popen(
-                ["cmd", "/c", "start", "python", "-m", "debugpy", "--listen", "5678", "--wait-for-client", f"{bot_name}.py", "--config", ' '.join(config_list), "--server-address", 'localhost:5000'],
-                creationflags=subprocess.CREATE_NEW_PROCESS_GROUP
-            )
-        else:  # Linux and Mac
-            bot_process = subprocess.Popen(
-                ["gnome-terminal", "--", "python3", "-m", "debugpy", "--listen", "5678", "--wait-for-client", f"{bot_name}.py", "--config", ' '.join(config_list), "--server-address", 'localhost:5000'],
-                preexec_fn=os.setpgrp
-            )
-        self.bot_processes[bot_name] = bot_process
+        try:
+            # Construct the launch command to start the bot
+            command = ["python", f"{bot_config['type']}.py", "--bot_id", bot_id]
 
-    def stop_bot(self, bot_name):
+            # Load the existing bot process information
+            os.makedirs('temp', exist_ok=True)
+            if os.path.exists('temp/bot_process_info.json'):
+                with open('temp/bot_process_info.json', 'r') as f:
+                    data = json.load(f)
+            else:
+                data = {}
+
+            # Check if the last stored process information associated with this bot_id is still running
+            bot_info = data.get(bot_id, {})
+            pid = bot_info.get('pid')
+            command_str = ' '.join(command)
+            if pid and psutil.pid_exists(pid):
+                p = psutil.Process(pid)
+                if ' '.join(p.cmdline()) == command_str:
+                    logging.info(f"Bot {bot_id} is already running")
+                    return
+                else:
+                    logging.info(f"PID {pid} is not associated with bot {bot_id}, starting a new process")
+
+            # Start the bot process
+            bot_process = subprocess.Popen(command)
+            self.bot_processes[bot_id] = bot_process
+            logging.info(f"Started bot {bot_id}")
+
+            # Update the bot process information temp file with the new process information
+            data[bot_id] = {'pid': bot_process.pid, 'command': command_str, 'timestamp': time.time()}
+            with open('temp/bot_process_info.json', 'w') as f:
+                json.dump(data, f)
+
+        except Exception as e:
+            logging.error(f"Failed to start bot {bot_id}: {e}")
+
+    def stop_bot(self, bot_id):
         """Stop a bot by sending a stop message over the socket."""
         try:
-            if bot_name in self.client_sockets:
+            if bot_id in self.client_sockets:
                 message = {"command": "stop"}
                 message_bytes = json.dumps(message).encode("utf-8")
-                self.client_sockets[bot_name].sendall(message_bytes)
+                self.client_sockets[bot_id].sendall(message_bytes)
         except Exception as e:
-            logging.error(f"Failed to stop bot {bot_name}. Reason: {e}")
+            logging.error(f"Failed to stop bot {bot_id}. Reason: {e}")
 
-    def cleanup(self):
-        """Cleanup function to stop all bots and close the GUI."""
-        for bot_type in self.bot_processes:
-            self.stop_bot(bot_type)
-            try:
-                self.bot_processes[bot_type].wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                self.bot_processes[bot_type].terminate()
-                logging.warning(f"Bot {bot_type} did not stop within the timeout period.")
+    def kill_bot(self, bot_id):
+        # Load the data from the file
+        with open('temp/bot_process_info.json', 'r') as f:
+            data = json.load(f)
+
+        # Get the bot's information using the bot_id key
+        bot_info = data.get(bot_id, {})
+
+        pid = bot_info.get('pid')
+        command = bot_info.get('command')
+
+        if pid and command:
+            if psutil.pid_exists(pid):
+                p = psutil.Process(pid)
+                if ' '.join(p.cmdline()) == command:
+                    p.terminate()
+                    logging.info(f"Killed bot {bot_id}")
+                else:
+                    logging.error(f"PID {pid} is not associated with bot {bot_id}")
+            else:
+                logging.error(f"Bot {bot_id} is not running")
+        else:
+            logging.error(f"No information found for bot {bot_id}")
+
+    def shutdown(self):
+        """Shutdown the manager and all bots."""
+        try:
+            with open('config.json', 'r') as f:
+                config = json.load(f)
+        except Exception as e:
+            logging.error(f"Failed to load configuration: {e}")
+            return
         
-        # Manager Cleanup
-        self.server_socket.close()  
+        # Stop all bots on shutdown if configured to do so
+        if config.get("stopbotsonshutdown", True):
+            for bot_id in self.bot_processes:
+                self.stop_bot(bot_id)
+                try:
+                    self.bot_processes[bot_id].wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    self.bot_processes[bot_id].terminate()
+                    logging.warning(f"Bot {bot_id} did not stop within the timeout period.")
+        
+        # Manager Cleanup  
         self.root.destroy()
-        self.shutdown = True
+        self.shuttingdown = True
 
     def open_log(self, bot_name):
         """Open the log file for a bot in Notepad++ or Notepad."""

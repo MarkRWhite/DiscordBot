@@ -10,8 +10,8 @@ class GPTBot(BotBase):
     A subclass of Bot that implements ChatGPT bot specific commands.
     """
 
-    def __init__(self, config, server_address):
-        super().__init__(config, server_address)
+    def __init__(self, bot_id=None):
+        super().__init__(bot_id)
         logging.info("Bot initialized.")
 
     @commands.command()
@@ -53,12 +53,8 @@ class GPTBot(BotBase):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run a TestBot.")
-    parser.add_argument("--config", help="The configuration dictionary file for the bot.")
-    parser.add_argument("--server-address", help="The server address to connect to.")
+    parser.add_argument( "--bot_id", help="The bot ID.")
     args = parser.parse_args()
 
-    bot = GPTBot(
-        config=args.config,
-        server_address=args.server_address,
-    )
+    bot = GPTBot(bot_id=args.bot_id)
     bot.run()

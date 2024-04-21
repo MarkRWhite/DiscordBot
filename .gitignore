@@ -2,3 +2,4 @@ venv/
 .env
 logging/
 __pycache__/
+temp/

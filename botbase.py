@@ -18,14 +18,15 @@ import dotenv
 
 class BotBase(ABC):
 
-    def __init__(self, config, server_address):
-        self.config = config
-        self.server_address = server_address
+    def __init__(self, bot_id=None):
+        self.bot_id = bot_id or self.__class__.__name__
+        self.config = self.load_config()
+        self.server_address = self.config.get("server_address")
         self.setup_logging() # Run this before anything that might log
 
         if not self.config.get("token_env_var"):
             raise ValueError("token_env_var argument is required.")
-        if not server_address:
+        if not self.server_address:
             raise ValueError("server_address argument is required.")
 
         # Setup communication with the manager
@@ -51,6 +52,22 @@ class BotBase(ABC):
         except Exception as e:
             logging.error(f"Error creating socket: {e}")
             return None
+        
+    def load_config(self):
+        """Load the bot configuration from the config.json file."""
+        try:
+            with open('config.json', 'r') as f:
+                config = json.load(f)
+        except Exception as e:
+            logging.error(f"Failed to load configuration: {e}")
+            return
+
+        bot_config = config.get("Bots", {}).get(self.bot_id)
+        if not bot_config:
+            logging.error(f"Failed to load configuration for bot: {self.bot_id}")
+            return
+
+        return bot_config
 
     def run(self):
         self.running = True

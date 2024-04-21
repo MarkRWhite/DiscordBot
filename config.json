@@ -1,0 +1,27 @@
+{
+    "Manager": {
+        "address": "http://localhost:5000",
+        "stopbotsonshutdown": true
+    },
+    "GUI": {
+        "address": "http://localhost:5001"
+    },
+    "Bots": {
+        "TestBot": {
+            "name": "Test Bot",
+            "envtoken": "TestBot_TOKEN",
+            "type": "TestBot",
+            "commands": ["hello", "goodbye"],
+            "address": "http://localhost:5010",
+            "showingui": true
+        },
+        "GPTBot": {
+            "name": "GPT Bot",
+            "envtoken": "GPTBot_TOKEN",
+            "type": "GPTBot",
+            "commands": ["hello", "goodbye", "chat"],
+            "address": "http://localhost:5011",
+            "showingui": true
+        }
+    }
+}
