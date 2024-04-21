@@ -1,21 +1,14 @@
 import os
 import subprocess
+import platform
 import threading
 import logging
 import logging.config
-import shutil
-import time
 from datetime import datetime
 import tkinter as tk
-from tkinter import ttk
 import json
 import dotenv
-import multiprocessing
 import socket
-from botbase import BotBase
-from testbot import TestBot
-from gptbot import GPTBot
-
 
 class Manager:
     def __init__(self):
@@ -249,67 +242,72 @@ class Manager:
         if bot_name in self.bot_processes:
             logging.warning(f"Bot {bot_name} is already running.")
             return
-        
+
+        # Find the bot configuration for the specified bot_name
         bot_config = next((bot for bot in self.bot_config if bot['name'] == bot_name), None)
-        if bot_config is None:
+        if not bot_config:
             logging.error(f"No configuration found for bot {bot_name}")
             return
 
+        config_list = []
+        for key, value in bot_config.items():
+            config_list.append(f"{key}={value}")
+        logging.info(f"Starting bot {bot_name} with config: {config_list}")
+
         # Start the bot in a new process
-        process = multiprocessing.Process(
-            target=self.run_bot_process,
-            args=(bot_config, self.server_socket.getsockname()),
-        )
-        process.start()
-        self.bot_processes[bot_name] = process
-
-    def run_bot_process(self, config, server_address):
-        # Create the bot (this method is called in another thread so the bot can run without blocking)
-        bot_type = config.get("type")
-
-        if bot_type == "TestBot":
-            bot = TestBot(config, server_address)
-        elif bot_type == "GPTBot":
-            bot = GPTBot(config, server_address)
-        else:
-            raise ValueError(f"Unknown bot type: {bot_type}")
-        bot.run()
+        if platform.system() == 'Windows':
+            bot_process = subprocess.Popen(
+                ["cmd", "/c", "start", "python", "-m", "debugpy", "--listen", "5678", "--wait-for-client", f"{bot_name}.py", "--config", ' '.join(config_list), "--server-address", 'localhost:5000'],
+                creationflags=subprocess.CREATE_NEW_PROCESS_GROUP
+            )
+        else:  # Linux and Mac
+            bot_process = subprocess.Popen(
+                ["gnome-terminal", "--", "python3", "-m", "debugpy", "--listen", "5678", "--wait-for-client", f"{bot_name}.py", "--config", ' '.join(config_list), "--server-address", 'localhost:5000'],
+                preexec_fn=os.setpgrp
+            )
+        self.bot_processes[bot_name] = bot_process
 
     def stop_bot(self, bot_name):
         """Stop a bot by sending a stop message over the socket."""
-        if bot_name in self.client_sockets:
-            message = {"command": "stop"}
-            message_bytes = json.dumps(message).encode("utf-8")
-            self.client_sockets[bot_name].sendall(message_bytes)
+        try:
+            if bot_name in self.client_sockets:
+                message = {"command": "stop"}
+                message_bytes = json.dumps(message).encode("utf-8")
+                self.client_sockets[bot_name].sendall(message_bytes)
+        except Exception as e:
+            logging.error(f"Failed to stop bot {bot_name}. Reason: {e}")
 
     def cleanup(self):
         """Cleanup function to stop all bots and close the GUI."""
         for bot_type in self.bot_processes:
             self.stop_bot(bot_type)
-            self.bot_processes[bot_type].join(timeout=5)
-            if self.bot_processes[bot_type].is_alive():
-                logging.warning(
-                    f"Bot {bot_type} did not stop within the timeout period."
-                )
+            try:
+                self.bot_processes[bot_type].wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                self.bot_processes[bot_type].terminate()
+                logging.warning(f"Bot {bot_type} did not stop within the timeout period.")
+        
+        # Manager Cleanup
+        self.server_socket.close()  
         self.root.destroy()
         self.shutdown = True
 
     def open_log(self, bot_name):
         """Open the log file for a bot in Notepad++ or Notepad."""
-        bot_log_file = self.get_bot_log_file(bot_name)
-        if not os.path.exists(bot_log_file):
-            logging.error(f"Log file for bot {bot_name} does not exist.")
+        log_file = self.get_bot_log_file(bot_name)
+        if not log_file:
+            logging.error(f"No log file found for bot {bot_name}.")
             return
         try:
-            subprocess.Popen(["notepad++.exe", bot_log_file])
-            logging.info(f"Opened log for bot {bot_name} in Notepad++")
+            subprocess.Popen(["notepad++.exe", log_file])
+            logging.info(f"Opened {bot_name} log in Notepad++")
         except FileNotFoundError:
             try:
-                subprocess.Popen(["notepad.exe", bot_log_file])
-                logging.info(f"Opened log for bot {bot_name} in Notepad")
+                subprocess.Popen(["notepad.exe", log_file])
+                logging.info(f"Opened {bot_name} log in Notepad")
             except FileNotFoundError:
                 logging.error(
-                    f"Failed to open log file for bot {bot_name}. Please ensure that Notepad or Notepad++ is installed."
+                    f"Failed to open {bot_name} log file. Please ensure that Notepad or Notepad++ is installed."
                 )
 
 

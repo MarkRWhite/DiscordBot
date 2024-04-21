@@ -10,8 +10,8 @@ class TestBot(BotBase):
     A subclass of BotBase that implements TestBot specific commands.
     """
 
-    def __init__(self, token_env_var, log_file, server_address):
-        super().__init__(token_env_var, log_file, server_address)
+    def __init__(self, config, server_address):
+        super().__init__(config, server_address)
         logging.info("Bot initialized.")
 
     @commands.command()
@@ -45,17 +45,12 @@ class TestBot(BotBase):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run a TestBot.")
-    parser.add_argument(
-        "--token-env-var",
-        help="The name of the environment variable that stores the bot token.",
-    )
-    parser.add_argument("--log", help="The file to log output to.")
+    parser.add_argument("--config", help="The configuration dictionary file for the bot.")
     parser.add_argument("--server-address", help="The server address to connect to.")
     args = parser.parse_args()
 
     bot = TestBot(
-        token_env_var=args.token_env_var,
-        log_file=args.log,
+        config=args.config,
         server_address=args.server_address,
     )
     bot.run()
