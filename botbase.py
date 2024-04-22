@@ -20,11 +20,11 @@ class BotBase(ABC):
 
     def __init__(self, bot_id=None):
         self.bot_id = bot_id or self.__class__.__name__
-        self.config = self.load_config()
-        self.server_address = self.config.get("server_address")
         self.setup_logging() # Run this before anything that might log
+        self.bot_config = self.load_config()
+        self.server_address = self.bot_config.get("server_address")
 
-        if not self.config.get("token_env_var"):
+        if not self.bot_config.get("token_env_var"):
             raise ValueError("token_env_var argument is required.")
         if not self.server_address:
             raise ValueError("server_address argument is required.")
@@ -102,7 +102,7 @@ class BotBase(ABC):
         self.manager_listening_thread.start()
 
     def send_connected_message(self):
-        status_message = {"status": "connected", "bot_name": self.config.get("bot_name")} 
+        status_message = {"status": "connected", "bot_name": self.bot_config.get("bot_name")} 
         self.manager_socket.sendall(json.dumps(status_message).encode("utf-8")) # The manager uses this message to identify the connecting bot
 
     def manager_listen(self):
@@ -133,7 +133,7 @@ class BotBase(ABC):
         with open("logging.json", "r") as f:
             config = json.load(f)
         date = datetime.datetime.now().strftime("%Y-%m-%d")
-        config["handlers"]["default"]["filename"] = f"{date}_{self.__class__.__name__}.log"
+        config["handlers"]["default"]["filename"] = f"{date}_{self.bot_id}.log"
         logging.config.dictConfig(config)
 
     def setup_discord(self):
