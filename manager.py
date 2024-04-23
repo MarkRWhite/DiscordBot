@@ -37,7 +37,6 @@ class Manager:
 
     def start_server(self):
         self.server_socket.listen()
-        self.server_socket.setblocking(False)  # Set to non-blocking
         while not self.shuttingdown:
             try:
                 readable, _, _ = select.select([self.server_socket], [], [], 1)
@@ -47,7 +46,6 @@ class Manager:
                     client_thread.start()
             except Exception as e:
                 logging.error(f"Failed to accept client connection: {e}")
-                time.sleep(1)  # Delay before retrying
 
     def handle_connection(self, client_socket):
         client_socket.setblocking(False)  # Set to non-blocking
@@ -65,9 +63,9 @@ class Manager:
                 buffer += data
                 while b'\n' in buffer:
                     message, buffer = buffer.split(b'\n', 1)
-                    self.handle_message(message, client_socket)
+                    self.process_message(message, client_socket)
 
-    def handle_message(self, message, client_socket):
+    def process_message(self, message, client_socket):
         try:
             message = json.loads(message)
             if 'bot_id' in message:

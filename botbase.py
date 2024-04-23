@@ -50,7 +50,6 @@ class BotBase(ABC):
     def create_socket(self):
         try:
             s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            s.setblocking(False)  # Set to non-blocking
             s.connect(self.server_address)
             return s
         except Exception as e:
@@ -111,21 +110,21 @@ class BotBase(ABC):
                 logging.error(f"Error sending message: {e}")
 
     def manager_listen(self):
-        if self.manager_socket:
-            while self.manager_listening:
-                try:
-                    message_bytes = self.manager_socket.recv(1024) # Receive message from manager
-                except socket.timeout:
-                    continue
-                except socket.error as e:
-                    logging.error(f"Socket error: {e}")
-                    break
-
-                if not message_bytes:
-                    break; # Connection was closed from server
-
-                message = json.loads(message_bytes.decode("utf-8"))
-                self.process_message(message)
+        while self.manager_listening:
+            try:
+                data = self.manager_socket.recv(1024)
+                if data:
+                    message = data.decode('utf-8')
+                    try:
+                        message = json.loads(message)
+                        self.process_message(message)
+                    except json.JSONDecodeError:
+                        logging.error(f"Received invalid JSON: {message}")
+                else:
+                    self.handle_disconnect()
+            except OSError as e:
+                logging.error(f"Error receiving data: {e}")
+                self.handle_disconnect()
 
             logging.info("Listening thread is stopping.")
 

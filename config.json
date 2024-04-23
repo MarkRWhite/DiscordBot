@@ -23,5 +23,9 @@
             "commands": ["hello", "goodbye", "chat"],
             "showingui": true
         }
+    },
+    "GPT2Server": {
+        "host": "localhost",
+        "port": 5002
     }
 }

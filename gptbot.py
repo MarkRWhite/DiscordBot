@@ -1,9 +1,12 @@
 import argparse
 import logging
 import discord
+import json
+import socket
+from cryptography.fernet import Fernet
 from discord.ext import commands
 from botbase import BotBase
-
+from helpers.encryption import get_env_key
 
 class GPTBot(BotBase):
     """
@@ -12,6 +15,15 @@ class GPTBot(BotBase):
 
     def __init__(self, bot_id=None):
         super().__init__(bot_id)
+        # Load the configuration
+        with open('config.json') as f:
+            self.config = json.load(f)
+        # Get the GPT2Server credentials from the configuration
+        self.host = self.config['GPT2Server']['host']
+        self.port = self.config['GPT2Server']['port']
+        # Generate a key and create a cipher object
+        self.key = get_env_key().encode()  # Call the generate_key function and encode the result
+        self.cipher_suite = Fernet(self.key)
         logging.info("Bot initialized.")
 
     @commands.command()
@@ -26,8 +38,28 @@ class GPTBot(BotBase):
         """
         Generate a response using ChatGPT.
         """
-        # This is a placeholder. Replace this with code to generate a response using ChatGPT.
-        return f"ChatGPT says: {message}"
+        # Create a socket object
+        s = socket.socket()
+
+        # Connect to the server
+        s.connect((self.host, self.port))
+
+        # Encrypt the message
+        encrypted_msg = self.cipher_suite.encrypt(message.encode())
+
+        # Send the message
+        s.send(encrypted_msg)
+
+        # Receive the response
+        encrypted_response = s.recv(1024)
+
+        # Decrypt the response
+        response = self.cipher_suite.decrypt(encrypted_response)
+
+        # Close the connection
+        s.close()
+
+        return response.decode()
 
     def initialize_bot_commands(self):
         """
