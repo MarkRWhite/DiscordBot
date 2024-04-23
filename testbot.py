@@ -1,6 +1,5 @@
 import argparse
 import logging
-import discord
 from discord.ext import commands
 from botbase import BotBase
 

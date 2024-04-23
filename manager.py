@@ -90,7 +90,7 @@ class Manager:
             host = config.get("Manager", {}).get("host")
             port = config.get("Manager", {}).get("port")
             self.server_address = (host, port)  # Use the host and port from the config file
-            self.bot_configurations = config.get("Bots", {})
+            self.bot_config = config.get("Bots", {})
         except Exception as e:
             logging.error(f"Failed to load configuration: {e}")
 
