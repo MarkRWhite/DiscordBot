@@ -22,17 +22,20 @@ class BotBase(ABC):
     def __init__(self, bot_id=None):
         self.bot_id = bot_id or self.__class__.__name__
         self.setup_logging() # Run this before anything that might log
-        self.bot_config = self.load_config()
-        self.server_address = self.bot_config.get("server_address")
+        self.config = self.load_config()
+        
+        address = self.config.get("Manager", {}).get("host"), self.config.get("Manager", {}).get("port")
+        self.server_address = (address) if self.config.get("Manager") else None
 
-        if not self.bot_config.get("token_env_var"):
+        if not self.config.get("Bots", {}).get(self.bot_id, {}).get("token_env_var"):
             raise ValueError("token_env_var argument is required.")
-        if not self.server_address:
-            raise ValueError("server_address argument is required.")
-
+        
         # Setup communication with the manager
-        self.manager_socket = self.create_socket()
-        self.send_connected_message() # TODO: Make a generic send_message method that can be used for all messages
+        self.manager_socket = self.create_socket() if self.server_address else None
+        if self.manager_socket:
+            self.send_connected_message() 
+        else:
+            logging.info("No server address provided. Running without a Manager.")
         self.manager_listening = False
         self.retry_interval = 5  # Seconds - How often we try to reconnect to the manager
         self.lock = threading.Lock() # TODO: Implement thread locking for events on other threads that touch the bot object properties
@@ -55,7 +58,7 @@ class BotBase(ABC):
             return None
         
     def load_config(self):
-        """Load the bot configuration from the config.json file."""
+        """Load the full configuration from the config.json file."""
         try:
             with open('config.json', 'r') as f:
                 config = json.load(f)
@@ -63,17 +66,13 @@ class BotBase(ABC):
             logging.error(f"Failed to load configuration: {e}")
             return
 
-        bot_config = config.get("Bots", {}).get(self.bot_id)
-        if not bot_config:
-            logging.error(f"Failed to load configuration for bot: {self.bot_id}")
-            return
-
-        return bot_config
+        return config
 
     def run(self):
         self.running = True
-        self.start_manager_listener()  # Start the listening thread for communication with the manager
-        self.send_connected_message()  # Moved after start_manager_listener
+        if self.manager_socket:
+            self.start_manager_listener()  # Start the listening thread for communication with the manager
+            self.send_connected_message()  # Moved after start_manager_listener
         self.discord_run()
 
         # Main Run Loop
@@ -81,17 +80,17 @@ class BotBase(ABC):
             self.main_loop()
 
             # Restart communication with the manager
-            current_time = time.time()
-            if not self.manager_listening_thread.is_alive() and self.manager_listening and current_time - self.last_retry_time > self.retry_interval:
+            if self.manager_socket and not self.manager_listening_thread.is_alive() and self.manager_listening and time.time() - self.last_retry_time > self.retry_interval:
                 self.start_manager_listener()
-                self.last_retry_time = current_time
+                self.last_retry_time = time.time()
 
             time.sleep(0.5)
 
         # Wait for any process threads to exit here before exiting the process
-        if self.manager_listening_thread.is_alive():
+        if self.manager_socket and self.manager_listening_thread.is_alive():
             self.manager_listening = False
-        self.manager_listening_thread.join()  # wait for the listening thread to exit
+        if self.manager_socket:
+            self.manager_listening_thread.join()  # wait for the listening thread to exit
 
         logging.info(f"Bot is stopping.")
 
@@ -104,29 +103,31 @@ class BotBase(ABC):
         self.manager_listening_thread.start()
 
     def send_connected_message(self):
-        status_message = {"status": "connected", "bot_id": self.bot_config.get("bot_id")}
-        try:
-            self.manager_socket.sendall(json.dumps(status_message).encode("utf-8"))
-        except Exception as e:
-            logging.error(f"Error sending message: {e}")
+        if self.manager_socket:
+            status_message = {"status": "connected", "bot_id": self.config.get("Bots", {}).get(self.bot_id, {}).get("bot_id")}
+            try:
+                self.manager_socket.sendall(json.dumps(status_message).encode("utf-8"))
+            except Exception as e:
+                logging.error(f"Error sending message: {e}")
 
     def manager_listen(self):
-        while self.manager_listening:
-            try:
-                message_bytes = self.manager_socket.recv(1024) # Receive message from manager
-            except socket.timeout:
-                continue
-            except socket.error as e:
-                logging.error(f"Socket error: {e}")
-                break
+        if self.manager_socket:
+            while self.manager_listening:
+                try:
+                    message_bytes = self.manager_socket.recv(1024) # Receive message from manager
+                except socket.timeout:
+                    continue
+                except socket.error as e:
+                    logging.error(f"Socket error: {e}")
+                    break
 
-            if not message_bytes:
-                break; # Connection was closed from server
+                if not message_bytes:
+                    break; # Connection was closed from server
 
-            message = json.loads(message_bytes.decode("utf-8"))
-            self.process_message(message)
+                message = json.loads(message_bytes.decode("utf-8"))
+                self.process_message(message)
 
-        logging.info("Listening thread is stopping.")
+            logging.info("Listening thread is stopping.")
 
     @abstractmethod
     def process_message(self, message):
@@ -176,8 +177,9 @@ class BotBase(ABC):
         # TODO: Add thread locking for the shutdown process
         self.running = False
         self.manager_listening = False
-        self.manager_socket.shutdown(socket.SHUT_RDWR)  # shutdown the socket
-        self.manager_socket.close()  # close the socket
+        if self.manager_socket:
+            self.manager_socket.shutdown(socket.SHUT_RDWR)  # shutdown the socket
+            self.manager_socket.close()  # close the socket
         self.discord_stop()
 
     def discord_run(self):
