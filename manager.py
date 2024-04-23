@@ -116,12 +116,12 @@ class Manager:
         except Exception as e:
             logging.error(f"Failed to configure logging: {e}")
 
-    def get_bot_log_file(self, bot_name):
+    def get_bot_log_file(self, bot_id):
         """Get the most recent log file for a bot."""
         log_dir = "logging"
         if not os.path.exists(log_dir):
             os.makedirs(log_dir, exist_ok=True)
-        log_files = [f for f in os.listdir(log_dir) if bot_name in f]
+        log_files = [f for f in os.listdir(log_dir) if bot_id in f]
         if not log_files:
             return None
         latest_log_file = max(log_files, key=lambda f: os.path.getmtime(os.path.join(log_dir, f)))
@@ -272,7 +272,8 @@ class Manager:
 
         try:
             # Construct the launch command to start the bot
-            command = ["python", f"{bot_config['type']}.py", "--bot_id", bot_id]
+            python_path = self.config['Manager']['pythonpath']
+            command = [python_path] + [f"{bot_config['type']}.py", "--bot_id", bot_id]
 
             # Load the existing bot process information
             os.makedirs('temp', exist_ok=True)
@@ -288,17 +289,16 @@ class Manager:
             command_str = ' '.join(command)
             if pid and psutil.pid_exists(pid):
                 p = psutil.Process(pid)
-                if ' '.join(p.cmdline()) == command_str:
-                    logging.info(f"Bot {bot_id} is already running")
+                if p.status() != psutil.STATUS_ZOMBIE:
+                    logging.error(f"Bot {bot_id} is already running with PID {pid}.")
                     return
                 else:
-                    logging.info(f"PID {pid} is not associated with bot {bot_id}, starting a new process")
+                    p.terminate()
+                    p.wait(timeout=5)
 
             # Start the bot process
-            python_path = self.config['Manager']['pythonpath']
-            command = [python_path] + command
             print("DEBUG PATH: " + ' '.join(command))
-            bot_process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            bot_process = subprocess.Popen(command)
             self.bot_processes[bot_id] = bot_process
             logging.info(f"Started bot {bot_id}")
 
@@ -361,22 +361,22 @@ class Manager:
                     logging.info(f"Stopped bot {bot_id}")
         self.root.quit() # Escape the GUI mainloop
 
-    def open_log(self, bot_name):
+    def open_log(self, bot_id):
         """Open the log file for a bot in Notepad++ or Notepad."""
-        log_file = self.get_bot_log_file(bot_name)
+        log_file = self.get_bot_log_file(bot_id)
         if not log_file:
-            logging.error(f"No log file found for bot {bot_name}.")
+            logging.error(f"No log file found for bot {bot_id}.")
             return
         try:
             subprocess.Popen(["notepad++.exe", log_file])
-            logging.info(f"Opened {bot_name} log in Notepad++")
+            logging.info(f"Opened {bot_id} log in Notepad++")
         except FileNotFoundError:
             try:
                 subprocess.Popen(["notepad.exe", log_file])
-                logging.info(f"Opened {bot_name} log in Notepad")
+                logging.info(f"Opened {bot_id} log in Notepad")
             except FileNotFoundError:
                 logging.error(
-                    f"Failed to open {bot_name} log file. Please ensure that Notepad or Notepad++ is installed."
+                    f"Failed to open {bot_id} log file. Please ensure that Notepad or Notepad++ is installed."
                 )
 
 
