@@ -7,6 +7,7 @@ import logging.config
 import time
 import psutil
 import select
+import sys
 from datetime import datetime
 import tkinter as tk
 import json
@@ -86,11 +87,11 @@ class Manager:
         """Load configurations from config.json."""
         try:
             with open('config.json', 'r') as f:
-                config = json.load(f)
-            host = config.get("Manager", {}).get("host")
-            port = config.get("Manager", {}).get("port")
+                self.config = json.load(f)
+            host = self.config.get("Manager", {}).get("host")
+            port = self.config.get("Manager", {}).get("port")
             self.server_address = (host, port)  # Use the host and port from the config file
-            self.bot_config = config.get("Bots", {})
+            self.bot_config = self.config.get("Bots", {})
         except Exception as e:
             logging.error(f"Failed to load configuration: {e}")
 
@@ -169,7 +170,7 @@ class Manager:
         ]
 
         # Create a frame for each bot
-        for i, (bot_id, bot) in enumerate(self.bot_config.items()):
+        for i, (bot_id, bot) in enumerate(self.config.get("Bots", {}).items()):
             frame = tk.Frame(scrollable_frame)
             frame.grid(
                 row=i, column=0, padx=10, pady=10
@@ -260,16 +261,9 @@ class Manager:
 
     def start_bot(self, bot_id):
         """Start a bot process."""
-        try:
-            with open('config.json', 'r') as f:
-                config = json.load(f)
-        except Exception as e:
-            logging.error(f"Failed to load configuration: {e}")
-            return
-
-        bot_config = config.get("Bots", {}).get(bot_id)
+        bot_config = self.bot_config.get(bot_id)
         if not bot_config:
-            logging.error(f"Failed to start bot: {bot_id} configuration not found.")
+            logging.error(f"No configuration found for bot {bot_id}")
             return
 
         if bot_id in self.bot_processes and self.bot_processes[bot_id].poll() is None:
@@ -301,7 +295,10 @@ class Manager:
                     logging.info(f"PID {pid} is not associated with bot {bot_id}, starting a new process")
 
             # Start the bot process
-            bot_process = subprocess.Popen(command)
+            python_path = self.config['Manager']['pythonpath']
+            command = [python_path] + command
+            print("DEBUG PATH: " + ' '.join(command))
+            bot_process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             self.bot_processes[bot_id] = bot_process
             logging.info(f"Started bot {bot_id}")
 

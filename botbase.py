@@ -42,7 +42,7 @@ class BotBase(ABC):
         self.lock = threading.Lock() # TODO: Implement thread locking for events on other threads that touch the bot object properties
 
         dotenv.load_dotenv()  # Load environment variables from .env file
-        self.TOKEN = os.getenv(self.config.get("envtoken"))
+        self.TOKEN = os.getenv(self.config.get("Bots", {}).get(self.bot_id, {}).get("envtoken"))
         if not self.TOKEN:
             raise ValueError(f"Environment variable {self.config.get("envtoken")} is not set.")
 
@@ -94,6 +94,7 @@ class BotBase(ABC):
 
         logging.info(f"Bot is stopping.")
 
+    @abstractmethod
     def main_loop(self):
         pass # TODO: Main loop code actions go here
 
@@ -156,16 +157,14 @@ class BotBase(ABC):
 
     @abstractmethod
     def initialize_bot_commands(self):
-        self.commands = []
         # Add defaults
-        self.commands.append("hello")
+        self.bot.add_command(self.hello)
         self.bot.add_listener(self.on_ready)
         
         # Add custom commands from config
         custom_commands = self.config.get('commands', [])
         for command in custom_commands:
             if hasattr(self, command):
-                self.commands.append(command)
                 self.bot.add_command(getattr(self, command))
             else:
                 logging.warning(f"Command {command} not found in bot methods.")

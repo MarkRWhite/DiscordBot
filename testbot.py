@@ -1,5 +1,6 @@
 import argparse
 import logging
+import discord
 from discord.ext import commands
 from botbase import BotBase
 
@@ -12,6 +13,12 @@ class TestBot(BotBase):
     def __init__(self, bot_id=None):
         super().__init__(bot_id)
         logging.info("Bot initialized.")
+
+    def main_loop(self):
+        """
+        The main loop for the bot.
+        """
+        super().main_loop()
 
     @commands.command()
     async def echo(self, ctx, *, message=None):

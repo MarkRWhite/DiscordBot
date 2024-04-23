@@ -26,6 +26,12 @@ class GPTBot(BotBase):
         self.cipher_suite = Fernet(self.key)
         logging.info("Bot initialized.")
 
+    def main_loop(self):
+        """
+        The main loop for the bot.
+        """
+        super().main_loop()
+
     @commands.command()
     async def chat(self, ctx, *, message):
         """
