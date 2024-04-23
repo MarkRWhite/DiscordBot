@@ -28,8 +28,8 @@ class BotBase(ABC):
         address = self.config.get("Manager", {}).get("host"), self.config.get("Manager", {}).get("port")
         self.server_address = (address) if self.config.get("Manager") else None
 
-        if not self.config.get("Bots", {}).get(self.bot_id, {}).get("token_env_var"):
-            raise ValueError("token_env_var argument is required.")
+        if not self.config.get("Bots", {}).get(self.bot_id, {}).get("envtoken"):
+            raise ValueError("envtoken argument is required.")
         
         # Setup communication with the manager
         self.manager_socket = self.create_socket() if self.server_address else None
@@ -42,9 +42,9 @@ class BotBase(ABC):
         self.lock = threading.Lock() # TODO: Implement thread locking for events on other threads that touch the bot object properties
 
         dotenv.load_dotenv()  # Load environment variables from .env file
-        self.TOKEN = os.getenv(self.config.get("token_env_var"))
+        self.TOKEN = os.getenv(self.config.get("envtoken"))
         if not self.TOKEN:
-            raise ValueError(f"Environment variable {self.config.get("token_env_var")} is not set.")
+            raise ValueError(f"Environment variable {self.config.get("envtoken")} is not set.")
 
         self.setup_discord()
 
@@ -138,8 +138,14 @@ class BotBase(ABC):
     def setup_logging(self):
         with open("logging.json", "r") as f:
             config = json.load(f)
+
+        # Create logging directory if it doesn't exist
+        logs_dir = "logging"
+        if not os.path.exists(logs_dir):
+            os.makedirs(logs_dir)
+
         date = datetime.datetime.now().strftime("%Y-%m-%d")
-        config["handlers"]["default"]["filename"] = f"{date}_{self.bot_id}.log"
+        config["handlers"]["default"]["filename"] = os.path.join(logs_dir, f"{date}_{self.bot_id}.log")
         logging.config.dictConfig(config)
 
     def setup_discord(self):
