@@ -1,10 +1,12 @@
 {
     "Manager": {
-        "address": "http://localhost:5000",
+        "host": "localhost",
+        "port": 5000,
         "stopbotsonshutdown": true
     },
     "GUI": {
-        "address": "http://localhost:5001"
+        "host": "localhost",
+        "port": 5001
     },
     "Bots": {
         "TestBot": {
@@ -12,7 +14,6 @@
             "envtoken": "TestBot_TOKEN",
             "type": "TestBot",
             "commands": ["hello", "goodbye"],
-            "address": "http://localhost:5010",
             "showingui": true
         },
         "GPTBot": {
@@ -20,7 +21,6 @@
             "envtoken": "GPTBot_TOKEN",
             "type": "GPTBot",
             "commands": ["hello", "goodbye", "chat"],
-            "address": "http://localhost:5011",
             "showingui": true
         }
     }

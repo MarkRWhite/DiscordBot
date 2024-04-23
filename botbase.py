@@ -8,6 +8,7 @@ import sys
 import time
 import datetime
 import threading
+import select
 from abc import ABC, abstractmethod
 
 import asyncio
@@ -46,7 +47,7 @@ class BotBase(ABC):
     def create_socket(self):
         try:
             s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            s.settimeout(1)
+            s.setblocking(False)  # Set to non-blocking
             s.connect(self.server_address)
             return s
         except Exception as e:
@@ -71,7 +72,8 @@ class BotBase(ABC):
 
     def run(self):
         self.running = True
-        self.start_manager_listener() # Start the listening thread for communication with the manager
+        self.start_manager_listener()  # Start the listening thread for communication with the manager
+        self.send_connected_message()  # Moved after start_manager_listener
         self.discord_run()
 
         # Main Run Loop
@@ -80,7 +82,7 @@ class BotBase(ABC):
 
             # Restart communication with the manager
             current_time = time.time()
-            if not self.manager_listening_thread.is_alive() and self.manager_listening:
+            if not self.manager_listening_thread.is_alive() and self.manager_listening and current_time - self.last_retry_time > self.retry_interval:
                 self.start_manager_listener()
                 self.last_retry_time = current_time
 
@@ -102,8 +104,11 @@ class BotBase(ABC):
         self.manager_listening_thread.start()
 
     def send_connected_message(self):
-        status_message = {"status": "connected", "bot_name": self.bot_config.get("bot_name")} 
-        self.manager_socket.sendall(json.dumps(status_message).encode("utf-8")) # The manager uses this message to identify the connecting bot
+        status_message = {"status": "connected", "bot_id": self.bot_config.get("bot_id")}
+        try:
+            self.manager_socket.sendall(json.dumps(status_message).encode("utf-8"))
+        except Exception as e:
+            logging.error(f"Error sending message: {e}")
 
     def manager_listen(self):
         while self.manager_listening:

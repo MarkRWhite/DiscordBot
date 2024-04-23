@@ -6,6 +6,7 @@ import logging
 import logging.config
 import time
 import psutil
+import select
 from datetime import datetime
 import tkinter as tk
 import json
@@ -16,16 +17,17 @@ class Manager:
         self.bot_processes = {}
         self.client_threads = []
         self.shuttingdown = False
+        self.configure_logging()
+        self.load_configuration()
+        self.initialize_gui()
+
         # Configure server socket for communication with bots
         self.client_sockets = {} # Store client sockets for each bot
         self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.server_socket.bind(('localhost', 5000))  # Bind to localhost on port 5000
+        self.server_socket.bind(self.server_address)  # Bind to localhost on port 5000
         self.server_thread = threading.Thread(target=self.start_server)
         self.server_thread.start()
 
-        self.configure_logging()
-        self.bot_config = self.load_bot_configuration()  # Load bot configurations from config.json
-        self.initialize_gui()
         self.root.mainloop()  # Start the GUI (BLOCKING)
         
         # Wait for any spawned threads to finish
@@ -35,48 +37,64 @@ class Manager:
 
     def start_server(self):
         self.server_socket.listen()
-        self.server_socket.settimeout(1)
+        self.server_socket.setblocking(False)  # Set to non-blocking
         while not self.shuttingdown:
             try:
-                client_socket, address = self.server_socket.accept() # Accept incoming connections (blocking call)
-                client_thread = threading.Thread(target=self.handle_connection, args=(client_socket,))
-                client_thread.start()
-            except socket.timeout:
-                continue
+                readable, _, _ = select.select([self.server_socket], [], [], 1)
+                if readable:
+                    client_socket, address = self.server_socket.accept()
+                    client_thread = threading.Thread(target=self.handle_connection, args=(client_socket,))
+                    client_thread.start()
             except Exception as e:
-                logging.error(f"An error occurred: {e}")
-                break
-
-        # Close the server socket
-        self.server_socket.close()
+                logging.error(f"Failed to accept client connection: {e}")
+                time.sleep(1)  # Delay before retrying
 
     def handle_connection(self, client_socket):
-        client_socket.settimeout(1)  # Set a timeout of 1 second
-        bot_name = None
+        client_socket.setblocking(False)  # Set to non-blocking
+        buffer = b""
         while not self.shuttingdown:
-            try:
-                message = client_socket.recv(1024)
-                if not message:
+            readable, _, _ = select.select([client_socket], [], [], 1)
+            if readable:
+                data = client_socket.recv(1024)
+                if not data:
+                    # Client disconnected
+                    for bot_id, socket in list(self.client_sockets.items()):
+                        if socket == client_socket:
+                            del self.client_sockets[bot_id]
                     break
-                
-                if not bot_name: # If we don't have a bot name yet, get it from the first message
-                    bot_name = json.loads(message.decode("utf-8")).get("bot_name")
-                    self.client_sockets[bot_name] = client_socket
-                    logging.info(f"Connected to bot {bot_name}")
+                buffer += data
+                while b'\n' in buffer:
+                    message, buffer = buffer.split(b'\n', 1)
+                    self.handle_message(message, client_socket)
 
-                # TODO: Process messages from the client bots here
-            except socket.timeout:
-                continue
+    def handle_message(self, message, client_socket):
+        try:
+            message = json.loads(message)
+            if 'bot_id' in message:
+                bot_id = message['bot_id']
+                if bot_id in self.client_sockets:
+                    # If bot_id is already in client_sockets, validate that it matches the bot_id associated with the client_socket
+                    if self.client_sockets[bot_id] != client_socket:
+                        logging.error(f"Received message with bot_id {bot_id} from unexpected client_socket")
+                else:
+                    # If bot_id is not in client_sockets, add it
+                    self.client_sockets[bot_id] = client_socket
+            else:
+                logging.error(f"Received message without bot_id: {message}")
+        except json.JSONDecodeError:
+            logging.error(f"Failed to decode message: {message}")
 
-    def load_bot_configuration(self):
-        """Load bot configurations from config.json."""
+    def load_configuration(self):
+        """Load configurations from config.json."""
         try:
             with open('config.json', 'r') as f:
                 config = json.load(f)
-            return config.get("Bots", {})
+            host = config.get("Manager", {}).get("host")
+            port = config.get("Manager", {}).get("port")
+            self.server_address = (host, port)  # Use the host and port from the config file
+            self.bot_configurations = config.get("Bots", {})
         except Exception as e:
-            logging.error(f"Failed to load bot configuration: {e}")
-            return None
+            logging.error(f"Failed to load configuration: {e}")
 
     def configure_logging(self):
         """Configure the logging system by reading the logging configuration from the logging.json file."""
@@ -332,27 +350,21 @@ class Manager:
             logging.error(f"No information found for bot {bot_id}")
 
     def shutdown(self):
-        """Shutdown the manager and all bots."""
+        """Shutdown the manager and stop all bots if stopBotsOnShutdown is True."""
+        self.shuttingdown = True
         try:
             with open('config.json', 'r') as f:
                 config = json.load(f)
         except Exception as e:
             logging.error(f"Failed to load configuration: {e}")
             return
-        
-        # Stop all bots on shutdown if configured to do so
-        if config.get("stopbotsonshutdown", True):
-            for bot_id in self.bot_processes:
-                self.stop_bot(bot_id)
-                try:
-                    self.bot_processes[bot_id].wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    self.bot_processes[bot_id].terminate()
-                    logging.warning(f"Bot {bot_id} did not stop within the timeout period.")
-        
-        # Manager Cleanup  
-        self.root.destroy()
-        self.shuttingdown = True
+        stop_bots_on_shutdown = config.get("Manager", {}).get("stopBotsOnShutdown", False)
+        if stop_bots_on_shutdown:
+            for bot_id, bot_process in self.bot_processes.items():
+                if bot_process.poll() is None:
+                    bot_process.terminate()
+                    logging.info(f"Stopped bot {bot_id}")
+        self.root.quit() # Escape the GUI mainloop
 
     def open_log(self, bot_name):
         """Open the log file for a bot in Notepad++ or Notepad."""
