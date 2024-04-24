@@ -108,13 +108,18 @@ class BotBase(ABC):
             status_message = {"status": "connected", "bot_id": self.config.get("Bots", {}).get(self.bot_id, {}).get("bot_id")}
             try:
                 self.manager_socket.sendall(json.dumps(status_message).encode("utf-8"))
+                response = self.manager_socket.recv(1024).decode('utf-8')
+                if response != 'OK':
+                    logging.error(f"Failed to connect to manager: {response}")
             except Exception as e:
                 logging.error(f"Error sending message: {e}")
 
     def manager_listen(self):
         while self.manager_listening:
             try:
-                data = self.manager_socket.recv(1024)
+                data = None
+                if self.manager_socket is not None:
+                    data = self.manager_socket.recv(1024)
                 if data:
                     message = data.decode('utf-8')
                     try:
@@ -124,11 +129,17 @@ class BotBase(ABC):
                         logging.error(f"Received invalid JSON: {message}")
                 else:
                     self.handle_disconnect()
+                    break
             except OSError as e:
                 logging.error(f"Error receiving data: {e}")
                 self.handle_disconnect()
+                break
 
-            logging.info("Listening thread is stopping.")
+        logging.info("Listening thread is stopping.")
+
+    def handle_disconnect(self):
+        logging.info("Disconnected from the server.")
+        self.manager_socket = None
 
     @abstractmethod
     def process_message(self, message):
