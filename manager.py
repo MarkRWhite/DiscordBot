@@ -14,17 +14,18 @@ import socketserver
 class Manager:
     def __init__(self):
         self.bot_processes = {}
-        self.client_threads = []
+        self.client_sockets = {}
+        self.client_sockets_lock = threading.Lock()  # Add a lock for client_sockets thread safety
         self.shuttingdown = False
         self.configure_logging()
         self.load_configuration()
         self.initialize_gui()
-
+        
         try:
             # Configure server socket for communication with bots
             self.server = socketserver.ThreadingTCPServer(self.server_address, self.process_message)
-            server_thread = threading.Thread(target=self.server.serve_forever)
-            server_thread.start()
+            self.server_thread = threading.Thread(target=self.server.serve_forever)
+            self.server_thread.start()
         except socket.error as e:
             logging.error(f"Failed to start server: {e}")
             self.server = None
@@ -32,6 +33,7 @@ class Manager:
         self.root.mainloop()  # Start the GUI (BLOCKING)
         
         # Wait for server thread to finish
+        #TODO: Stop bot processes
         self.server.shutdown()
         self.server_thread.join()
 
@@ -43,23 +45,38 @@ class Manager:
             logging.info(f"Received message: {message}")
             bot_id = message.get('bot_id')
             if bot_id:
-                if bot_id in self.client_sockets and self.client_sockets[bot_id] != request:
-                    logging.error(f"Received message with bot_id {bot_id} from unexpected client_socket")
-                else:
-                    # If bot_id is not in client_sockets, add it
-                    self.client_sockets[bot_id] = request
+                with self.client_sockets_lock:  # Acquire the lock before accessing client_sockets
+                    if bot_id in self.client_sockets and self.client_sockets[bot_id] != request:
+                        logging.error(f"Received message with bot_id {bot_id} from unexpected client_socket")
+                    else:
+                        # If bot_id is not in client_sockets, add it
+                        self.client_sockets[bot_id] = request
+                        if message.get('status') == 'connected':
+                            # Send an 'OK' message back to the bot
+                            self.send_message(bot_id, 'OK')
             else:
                 logging.error(f"Received message without bot_id: {message}")
         except json.JSONDecodeError:
             logging.error(f"Failed to decode message: {message}")
         except socket.timeout:
-            print("Client did not send data within the timeout period")
+            logging.error("Client did not send data within the timeout period")
 
     def send_message(self, bot_id, message):
-        if bot_id in self.client_sockets:
-            self.client_sockets[bot_id].sendall(message.encode('utf-8'))
-        else:
-            logging.error(f"No client connection found for bot_id {bot_id}")
+        with self.client_sockets_lock:  # Acquire the lock before accessing client_sockets
+            if bot_id in self.client_sockets:
+                try:
+                    # Try to send the message
+                    self.client_sockets[bot_id].sendall(message.encode('utf-8'))
+                except OSError as e:
+                    if e.winerror == 10038:
+                        # The socket is closed, remove it from client_sockets
+                        del self.client_sockets[bot_id]
+                        logging.error(f"Socket for bot_id {bot_id} was closed")
+                    else:
+                        # Some other OSError occurred, re-raise it
+                        raise
+            else:
+                logging.error(f"No client connection found for bot_id {bot_id}")
 
     def load_configuration(self):
         """Load configurations from config.json."""
@@ -262,25 +279,38 @@ class Manager:
             logging.error(f"Failed to start bot {bot_id}: {e}")
 
     def stop_bot(self, bot_id, timeout=5):
-        if bot_id in self.bot_processes:
-            # Send a "stop" message to the bot
-            self.send_message(bot_id, json.dumps({"command": "stop"}))
-            
-            # Wait for a timeout period
-            start_time = time.time()
-            while time.time() - start_time < timeout:
-                if not self.bot_processes[bot_id].is_alive():
-                    return
-                time.sleep(0.1)
-            
-            # If the bot does not shut down within this period, kill the process
-            self.bot_processes[bot_id].terminate()
-            self.bot_processes[bot_id].join()
-        else:
-            logging.error(f"No bot process found for bot_id {bot_id}")
+        """Stop a bot process."""
+        with self.client_sockets_lock:  # Acquire the lock before accessing client_sockets
+            if bot_id in self.client_sockets:
+                try:
+                    self.send_message(bot_id, json.dumps({"command": "stop"}))
+                except OSError as e:
+                    if e.winerror == 10038:
+                        del self.client_sockets[bot_id] # The socket is closed, remove it from client_sockets
+                        logging.error(f"Socket for bot_id {bot_id} was closed")
+                    else:
+                        raise # Some other OSError occurred, re-raise it
+            else:
+                logging.error(f"No client connection found for bot_id {bot_id}")
+
+        if bot_id not in self.bot_processes or self.bot_processes[bot_id].poll() is not None:
+            logging.error(f"Bot {bot_id} is not running.")
+            return
+
+        try:
+            # Wait for the bot process to terminate
+            self.bot_processes[bot_id].wait(timeout)
+        except subprocess.TimeoutExpired:
+            # If the process does not terminate within the timeout, kill it
+            self.bot_processes[bot_id].kill()
+            self.bot_processes[bot_id].wait()  # Wait for the process to terminate
+
+        del self.bot_processes[bot_id]  # Remove the bot from the bot_processes dictionary
+        logging.info(f"Stopped bot {bot_id}")
 
     def shutdown(self):
         """Shutdown the manager. Stop all bots if the stop_bots_on_shutdown configuration option is set."""
+        logging.info("Shutting down the manager.")
         self.shuttingdown = True
         if self.config.get("Manager", {}).get("stop_bots_on_shutdown", False):
             for bot_id in self.bot_processes.keys():
