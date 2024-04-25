@@ -23,6 +23,9 @@ class BotBase(ABC):
     def __init__(self, bot_id=None):
         self.bot_id = bot_id or self.__class__.__name__
         self.running = False
+        self.manager_socket = None # Socket to communicate with Manager
+        self.ack_condition = threading.Condition() # Condition to wait for message ACK from Manager
+        self.waiting_for_ack = False # Flag to indicate if we are waiting for an ACK
         self.setup_logging() # Run this before anything that might log
         self.config = self.load_config()
         
@@ -45,13 +48,20 @@ class BotBase(ABC):
         self.communication_thread.start()
 
     def communication_loop(self):
-        connected_message = json.dumps({"status": "connected", "bot_id": self.bot_id})
-        self.send_message(connected_message)
         while self.running:
             try:
                 message = self.manager_socket.recv(1024).decode('utf-8')
                 if message and message != 'OK':
+                    self.manager_socket.sendall('OK'.encode('utf-8')) # ACK
                     self.process_message(json.loads(message))
+                elif message == 'OK':
+                    if self.waiting_for_ack:
+                        logging.info("Received ACK from Manager.")
+                    else:
+                        logging.warning("Received unexpected ACK from Manager.")
+                    with self.ack_condition:
+                        self.waiting_for_ack = False # Release the ACK condition
+                        self.ack_condition.notify_all()
             except Exception as e:
                 logging.error(f"Error receiving message: {e}")
                 break
@@ -62,9 +72,7 @@ class BotBase(ABC):
         if self.manager_socket:
             try:
                 self.manager_socket.sendall(json.encode('utf-8'))
-                response = self.manager_socket.recv(1024).decode('utf-8')
-                if response != 'OK':
-                    logging.error(f"Message not received by manager properly: {response}")
+                self.wait_for_ack()
             except Exception as e:
                 logging.error(f"Error sending message: {e}")
 
@@ -77,6 +85,13 @@ class BotBase(ABC):
             logging.error(f"Error creating socket: {e}")
             return None
         
+    def wait_for_ack(self, timeout=None):
+        """Wait for an ACK from the Manager."""
+        with self.ack_condition:
+            self.waiting_for_ack = True
+            while self.waiting_for_ack:
+                self.ack_condition.wait(timeout)
+
     def load_config(self):
         """Load the full configuration from the config.json file."""
         try:
@@ -95,6 +110,8 @@ class BotBase(ABC):
         self.manager_socket = self.create_socket() if self.server_address else None
         if self.manager_socket:
             self.start_communication_thread()
+            connected_message = json.dumps({"status": "connected", "bot_id": self.bot_id})
+            self.send_message(connected_message)
         else:
             logging.info("No server address provided. Running without a Manager.")
 

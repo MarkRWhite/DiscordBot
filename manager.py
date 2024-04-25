@@ -70,16 +70,13 @@ class Manager:
         with self.client_sockets_lock:  # Acquire the lock before accessing client_sockets
             if bot_id in self.client_sockets:
                 try:
-                    # Try to send the message
                     self.client_sockets[bot_id].sendall(message.encode('utf-8'))
                 except OSError as e:
                     if e.winerror == 10038:
-                        # The socket is closed, remove it from client_sockets
-                        del self.client_sockets[bot_id]
+                        del self.client_sockets[bot_id] # The socket is closed, remove it from client_sockets
                         logging.error(f"Socket for bot_id {bot_id} was closed")
                     else:
-                        # Some other OSError occurred, re-raise it
-                        raise
+                        raise # Some other OSError occurred, re-raise it
             else:
                 logging.error(f"No client connection found for bot_id {bot_id}")
 
