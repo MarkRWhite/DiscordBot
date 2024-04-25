@@ -141,7 +141,13 @@ class BotBase(ABC):
 
     @abstractmethod
     def shutdown(self):
-        # TODO: Add thread locking for the shutdown process
+        if self.manager_socket:
+            shutdown_message = {"status": "shutdown", "bot_id": self.bot_id}
+            try:
+                self.manager_socket.sendall(json.dumps(shutdown_message).encode("utf-8"))
+            except Exception as e:
+                logging.error(f"Error sending message: {e}")
+
         self.running = False
         self.discord_stop()
 

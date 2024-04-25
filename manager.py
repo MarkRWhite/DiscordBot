@@ -1,28 +1,15 @@
 import os
 import subprocess
-import platform
 import threading
 import logging
 import logging.config
 import time
 import psutil
-import select
-import sys
 from datetime import datetime
 import tkinter as tk
 import json
 import socket
 import socketserver
-
-class ThreadedTCPRequestHandler(socketserver.BaseRequestHandler):
-    def handle(self):
-        self.data = self.request.recv(1024).strip()
-        message = json.loads(self.data.decode('utf-8'))
-        logging.info(f"Received message: {message}")
-        # TODO: Add your message processing logic here
-
-class ThreadedTCPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
-    pass
 
 class Manager:
     def __init__(self):
@@ -33,10 +20,14 @@ class Manager:
         self.load_configuration()
         self.initialize_gui()
 
-        # Configure server socket for communication with bots
-        self.server = socketserver.ThreadingTCPServer(("localhost", 5000), self.process_message)
-        server_thread = threading.Thread(target=self.server.serve_forever)
-        server_thread.start()
+        try:
+            # Configure server socket for communication with bots
+            self.server = socketserver.ThreadingTCPServer(self.server_address, self.process_message)
+            server_thread = threading.Thread(target=self.server.serve_forever)
+            server_thread.start()
+        except socket.error as e:
+            logging.error(f"Failed to start server: {e}")
+            self.server = None
 
         self.root.mainloop()  # Start the GUI (BLOCKING)
         
@@ -45,6 +36,7 @@ class Manager:
         self.server_thread.join()
 
     def process_message(self, request, client_address, server):
+        request.settimeout(5.0)
         try:
             data = request.recv(1024).strip()
             message = json.loads(data.decode('utf-8'))
@@ -60,6 +52,8 @@ class Manager:
                 logging.error(f"Received message without bot_id: {message}")
         except json.JSONDecodeError:
             logging.error(f"Failed to decode message: {message}")
+        except socket.timeout:
+            print("Client did not send data within the timeout period")
 
     def send_message(self, bot_id, message):
         if bot_id in self.client_sockets:
@@ -256,88 +250,34 @@ class Manager:
 
         try:
             # Construct the launch command to start the bot
-            python_path = self.config['Manager']['pythonpath']
+            python_path = self.config['Manager']['pythonpath'] # Launch the bot using the local venv python so our packages are available to it
             command = [python_path] + [f"{bot_config['type']}.py", "--bot_id", bot_id]
-
-            # Load the existing bot process information
-            os.makedirs('temp', exist_ok=True)
-            if os.path.exists('temp/bot_process_info.json'):
-                with open('temp/bot_process_info.json', 'r') as f:
-                    data = json.load(f)
-            else:
-                data = {}
-
-            # Check if the last stored process information associated with this bot_id is still running
-            bot_info = data.get(bot_id, {})
-            pid = bot_info.get('pid')
-            command_str = ' '.join(command)
-            if pid and psutil.pid_exists(pid):
-                p = psutil.Process(pid)
-                if p.status() != psutil.STATUS_ZOMBIE:
-                    logging.error(f"Bot {bot_id} is already running with PID {pid}.")
-                    return
-                else:
-                    p.terminate()
-                    p.wait(timeout=5)
 
             # Start the bot process
             print("DEBUG PATH: " + ' '.join(command))
             bot_process = subprocess.Popen(command)
             self.bot_processes[bot_id] = bot_process
             logging.info(f"Started bot {bot_id}")
-
-            # Update the bot process information temp file with the new process information
-            data[bot_id] = {'pid': bot_process.pid, 'command': command_str, 'timestamp': time.time()}
-            with open('temp/bot_process_info.json', 'w') as f:
-                json.dump(data, f)
-
         except Exception as e:
             logging.error(f"Failed to start bot {bot_id}: {e}")
 
-    def stop_bot(self, bot_id):
-        """Stop a bot process."""
-        if bot_id not in self.bot_processes or self.bot_processes[bot_id].poll() is not None:
-            logging.error(f"Bot {bot_id} is not running.")
-            return
-        try:
-            # Send a stop message to the bot
+    def stop_bot(self, bot_id, timeout=5):
+        if bot_id in self.bot_processes:
+            # Send a "stop" message to the bot
             self.send_message(bot_id, json.dumps({"command": "stop"}))
-            # Wait for the bot to finish its operation
-            for _ in range(10):  # Wait for up to 10 seconds
-                if self.bot_processes[bot_id].poll() is not None:
-                    break
-                time.sleep(1)
-            else:
-                # If the bot is still running after 10 seconds, forcefully terminate it
-                self.bot_processes[bot_id].terminate()
-                self.bot_processes[bot_id].wait(timeout=5)
-            logging.info(f"Stopped bot {bot_id}")
-        except Exception as e:
-            logging.error(f"Failed to stop bot {bot_id}: {e}")
-
-    def kill_bot(self, bot_id):
-        # Load the data from the file
-        with open('temp/bot_process_info.json', 'r') as f:
-            data = json.load(f)
-
-        # Get the bot's information using the bot_id key
-        bot_info = data.get(bot_id, {})
-
-        pid = bot_info.get('pid')
-        command = bot_info.get('command')
-
-        if pid and command:
-            if psutil.pid_exists(pid):
-                p = psutil.Process(pid)
-                if ' '.join(p.cmdline()) == command:
-                    p.terminate()
-                    logging.info(f"Killed bot {bot_id}")
-                else:
-                    logging.error(f"PID {pid} is not associated with bot {bot_id}")
-            else:
-                logging.error(f"Bot {bot_id} is not running")
+            
+            # Wait for a timeout period
+            start_time = time.time()
+            while time.time() - start_time < timeout:
+                if not self.bot_processes[bot_id].is_alive():
+                    return
+                time.sleep(0.1)
+            
+            # If the bot does not shut down within this period, kill the process
+            self.bot_processes[bot_id].terminate()
+            self.bot_processes[bot_id].join()
         else:
-            logging.error(f"No information found for bot {bot_id}")
+            logging.error(f"No bot process found for bot_id {bot_id}")
 
     def shutdown(self):
         """Shutdown the manager. Stop all bots if the stop_bots_on_shutdown configuration option is set."""
