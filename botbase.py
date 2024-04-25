@@ -22,6 +22,7 @@ class BotBase(ABC):
 
     def __init__(self, bot_id=None):
         self.bot_id = bot_id or self.__class__.__name__
+        self.running = False
         self.setup_logging() # Run this before anything that might log
         self.config = self.load_config()
         
@@ -31,13 +32,6 @@ class BotBase(ABC):
         envtoken = self.config.get("Bots", {}).get(self.bot_id, {}).get("envtoken")
         if not envtoken:
             raise ValueError("envtoken argument is required.")
-        
-        # Setup communication with the manager
-        self.manager_socket = self.create_socket() if self.server_address else None
-        if self.manager_socket:
-            self.start_communication_thread()
-        else:
-            logging.info("No server address provided. Running without a Manager.")
 
         dotenv.load_dotenv()  # Load environment variables from .env file
         self.TOKEN = os.getenv(envtoken)
@@ -64,10 +58,10 @@ class BotBase(ABC):
 
         logging.info("Communication thread is stopping.")
 
-    def send_message(self, message):
+    def send_message(self, json):
         if self.manager_socket:
             try:
-                self.manager_socket.sendall(json.dumps(message).encode("utf-8"))
+                self.manager_socket.sendall(json.encode('utf-8'))
                 response = self.manager_socket.recv(1024).decode('utf-8')
                 if response != 'OK':
                     logging.error(f"Message not received by manager properly: {response}")
@@ -96,6 +90,14 @@ class BotBase(ABC):
 
     def run(self):
         self.running = True
+
+        # Setup communication with the manager
+        self.manager_socket = self.create_socket() if self.server_address else None
+        if self.manager_socket:
+            self.start_communication_thread()
+        else:
+            logging.info("No server address provided. Running without a Manager.")
+
         self.discord_run()
 
         logging.info(f"Bot is running.")
@@ -162,7 +164,7 @@ class BotBase(ABC):
         '''Shutdown the bot.'''
         logging.info("Shutting down the bot.")
         if self.manager_socket:
-            shutdown_message = {"status": "shutdown", "bot_id": self.bot_id}
+            shutdown_message = json.dumps({"status": "shutdown", "bot_id": self.bot_id})
             try:
                 self.send_message(shutdown_message)
             except Exception as e:
