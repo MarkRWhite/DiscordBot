@@ -10,6 +10,7 @@ import time
 import datetime
 import threading
 import select
+from queue import Queue
 from abc import ABC, abstractmethod
 
 import asyncio
@@ -25,6 +26,8 @@ class BotBase(ABC):
         self.running = False
         self.manager_socket = None # Socket to communicate with Manager
         self.ack_condition = threading.Condition() # Condition to wait for message ACK from Manager
+        self.message_queue = Queue() # Queue for incoming messages
+        self.queue_lock = threading.Lock() # Lock for the message queue
         self.waiting_for_ack = False # Flag to indicate if we are waiting for an ACK
         self.setup_logging() # Run this before anything that might log
         self.config = self.load_config()
@@ -52,8 +55,10 @@ class BotBase(ABC):
             try:
                 message = self.manager_socket.recv(1024).decode('utf-8')
                 if message and message != 'OK':
-                    self.manager_socket.sendall('OK'.encode('utf-8')) # ACK
-                    self.process_message(json.loads(message))
+                    ack_message = json.dumps({"status": "OK", "bot_id": self.bot_id})
+                    self.manager_socket.sendall(ack_message.encode('utf-8')) # ACK
+                    with self.queue_lock: # Acquire the lock before adding to the queue
+                        self.message_queue.put(json.loads(message)) # Add message to the queue
                 elif message == 'OK':
                     if self.waiting_for_ack:
                         logging.info("Received ACK from Manager.")
@@ -119,8 +124,12 @@ class BotBase(ABC):
 
         logging.info(f"Bot is running.")
         while self.running:
+            with self.queue_lock: # Acquire the lock before accessing the queue
+                if not self.message_queue.empty():
+                    message = self.message_queue.get()
+                    self.process_message(message) # Process incoming messages
             self.main_loop()
-            time.sleep(0.5)
+            time.sleep(0.1)
 
         logging.info(f"Bot is stopping.")
 

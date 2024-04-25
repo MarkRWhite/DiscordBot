@@ -23,7 +23,7 @@ class Manager:
         
         try:
             # Configure server socket for communication with bots
-            self.server = socketserver.ThreadingTCPServer(self.server_address, self.process_message)
+            self.server = socketserver.ThreadingTCPServer(self.server_address, self.communication_loop)
             self.server_thread = threading.Thread(target=self.server.serve_forever)
             self.server_thread.start()
         except socket.error as e:
@@ -37,33 +37,31 @@ class Manager:
         self.server.shutdown()
         self.server_thread.join()
 
-    def process_message(self, request, client_address, server):
+    def communication_loop(self, request_socket, client_address, server):
+        """Process thread loop for each client connection."""
         try:
             while not self.shuttingdown:
-                data = request.recv(1024).strip()
-                if not data:
-                    break
-                try:
-                    message = json.loads(data.decode('utf-8'))
-                except json.JSONDecodeError:
-                    logging.error(f"Failed to decode message: {data}")
-                    continue
-                logging.info(f"Received message: {message}")
-                if isinstance(message, dict):
-                    bot_id = message.get('bot_id')
-                    if bot_id:
-                        with self.client_sockets_lock:  # Acquire the lock before accessing client_sockets
-                            if bot_id in self.client_sockets and self.client_sockets[bot_id] != request:
-                                logging.error(f"Received message with bot_id {bot_id} from unexpected client_socket")
-                            else:
-                                self.client_sockets[bot_id] = request
-                        self.send_message(bot_id, 'OK')
-                    else:
-                        logging.error(f"Received message without bot_id: {message}")
-                else:
-                    logging.error(f"Received non-dict message: {message}")
+                message = self.request_socket.recv(1024).decode('utf-8')
+                if message:
+                    message_dict = json.loads(message)
+                    bot_id = message_dict.get('bot_id')
+                    if message_dict.get('status') == 'OK':
+                        logging.info(f"Received ACK from bot {bot_id}")
+                    elif message_dict.get('status') != 'OK':
+                        self.manager_socket.sendall('OK'.encode('utf-8')) # ACK
+                        self.process_message( request_socket, message_dict, bot_id)
         except Exception as e:
             logging.error(f"An error occurred: {e}")
+
+    def process_message(self, request, message_dict, bot_id):
+        """Process incoming message from a bot."""
+        # Handle connected status message
+        if message_dict.get('status') == 'connected':
+            with self.client_sockets_lock:  # Acquire the lock before modifying the dictionary
+                self.client_sockets[bot_id] = request  # Add the socket to the dictionary
+                logging.info(f"Bot {bot_id} connected.")
+        else:
+            logging.error("Received message with unknown status.")
 
     def send_message(self, bot_id, message):
         logging.info(f"Sending message to bot {bot_id}: {message}")
