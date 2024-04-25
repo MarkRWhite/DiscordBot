@@ -28,7 +28,8 @@ class BotBase(ABC):
         address = self.config.get("Manager", {}).get("host"), self.config.get("Manager", {}).get("port")
         self.server_address = (address) if self.config.get("Manager") else None
 
-        if not self.config.get("Bots", {}).get(self.bot_id, {}).get("envtoken"):
+        envtoken = self.config.get("Bots", {}).get(self.bot_id, {}).get("envtoken")
+        if not envtoken:
             raise ValueError("envtoken argument is required.")
         
         # Setup communication with the manager
@@ -37,12 +38,9 @@ class BotBase(ABC):
             self.send_connected_message() 
         else:
             logging.info("No server address provided. Running without a Manager.")
-        self.manager_listening = False
-        self.retry_interval = 5  # Seconds - How often we try to reconnect to the manager
-        self.lock = threading.Lock() # TODO: Implement thread locking for events on other threads that touch the bot object properties
 
         dotenv.load_dotenv()  # Load environment variables from .env file
-        self.TOKEN = os.getenv(self.config.get("Bots", {}).get(self.bot_id, {}).get("envtoken"))
+        self.TOKEN = os.getenv(envtoken)
         if not self.TOKEN:
             raise ValueError(f"Environment variable {self.config.get("envtoken")} is not set.")
 
@@ -64,33 +62,18 @@ class BotBase(ABC):
                 config = json.load(f)
         except Exception as e:
             logging.error(f"Failed to load configuration: {e}")
-            return
+            return {}
 
         return config
 
     def run(self):
         self.running = True
-        if self.manager_socket:
-            self.start_manager_listener()  # Start the listening thread for communication with the manager
-            self.send_connected_message()  # Moved after start_manager_listener
         self.discord_run()
 
         # Main Run Loop
         while self.running:
             self.main_loop()
-
-            # Restart communication with the manager
-            if self.manager_socket and not self.manager_listening_thread.is_alive() and self.manager_listening and time.time() - self.last_retry_time > self.retry_interval:
-                self.start_manager_listener()
-                self.last_retry_time = time.time()
-
             time.sleep(0.5)
-
-        # Wait for any process threads to exit here before exiting the process
-        if self.manager_socket and self.manager_listening_thread.is_alive():
-            self.manager_listening = False
-        if self.manager_socket:
-            self.manager_listening_thread.join()  # wait for the listening thread to exit
 
         logging.info(f"Bot is stopping.")
 
@@ -98,14 +81,9 @@ class BotBase(ABC):
     def main_loop(self):
         pass # TODO: Main loop code actions go here
 
-    def start_manager_listener(self):
-        self.manager_listening = True
-        self.manager_listening_thread = threading.Thread(target=self.manager_listen)  # Create a new thread instance
-        self.manager_listening_thread.start()
-
     def send_connected_message(self):
         if self.manager_socket:
-            status_message = {"status": "connected", "bot_id": self.config.get("Bots", {}).get(self.bot_id, {}).get("bot_id")}
+            status_message = {"status": "connected", "bot_id": self.bot_id}
             try:
                 self.manager_socket.sendall(json.dumps(status_message).encode("utf-8"))
                 response = self.manager_socket.recv(1024).decode('utf-8')
@@ -113,33 +91,6 @@ class BotBase(ABC):
                     logging.error(f"Failed to connect to manager: {response}")
             except Exception as e:
                 logging.error(f"Error sending message: {e}")
-
-    def manager_listen(self):
-        while self.manager_listening:
-            try:
-                data = None
-                if self.manager_socket is not None:
-                    data = self.manager_socket.recv(1024)
-                if data:
-                    message = data.decode('utf-8')
-                    try:
-                        message = json.loads(message)
-                        self.process_message(message)
-                    except json.JSONDecodeError:
-                        logging.error(f"Received invalid JSON: {message}")
-                else:
-                    self.handle_disconnect()
-                    break
-            except OSError as e:
-                logging.error(f"Error receiving data: {e}")
-                self.handle_disconnect()
-                break
-
-        logging.info("Listening thread is stopping.")
-
-    def handle_disconnect(self):
-        logging.info("Disconnected from the server.")
-        self.manager_socket = None
 
     @abstractmethod
     def process_message(self, message):
@@ -192,10 +143,6 @@ class BotBase(ABC):
     def shutdown(self):
         # TODO: Add thread locking for the shutdown process
         self.running = False
-        self.manager_listening = False
-        if self.manager_socket:
-            self.manager_socket.shutdown(socket.SHUT_RDWR)  # shutdown the socket
-            self.manager_socket.close()  # close the socket
         self.discord_stop()
 
     def discord_run(self):

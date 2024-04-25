@@ -12,6 +12,17 @@ from datetime import datetime
 import tkinter as tk
 import json
 import socket
+import socketserver
+
+class ThreadedTCPRequestHandler(socketserver.BaseRequestHandler):
+    def handle(self):
+        self.data = self.request.recv(1024).strip()
+        message = json.loads(self.data.decode('utf-8'))
+        logging.info(f"Received message: {message}")
+        # TODO: Add your message processing logic here
+
+class ThreadedTCPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
+    pass
 
 class Manager:
     def __init__(self):
@@ -23,65 +34,38 @@ class Manager:
         self.initialize_gui()
 
         # Configure server socket for communication with bots
-        self.client_sockets = {} # Store client sockets for each bot
-        self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.server_socket.bind(self.server_address)  # Bind to localhost on port 5000
-        self.server_thread = threading.Thread(target=self.start_server)
-        self.server_thread.start()
+        self.server = socketserver.ThreadingTCPServer(("localhost", 5000), self.process_message)
+        server_thread = threading.Thread(target=self.server.serve_forever)
+        server_thread.start()
 
         self.root.mainloop()  # Start the GUI (BLOCKING)
         
-        # Wait for any spawned threads to finish
+        # Wait for server thread to finish
+        self.server.shutdown()
         self.server_thread.join()
-        for thread in self.client_threads:
-            thread.join()
 
-    def start_server(self):
-        self.server_socket.listen()
-        while not self.shuttingdown:
-            try:
-                readable, _, _ = select.select([self.server_socket], [], [], 1)
-                if readable:
-                    client_socket, address = self.server_socket.accept()
-                    client_thread = threading.Thread(target=self.handle_connection, args=(client_socket,))
-                    client_thread.start()
-            except Exception as e:
-                logging.error(f"Failed to accept client connection: {e}")
-
-    def handle_connection(self, client_socket):
-        client_socket.setblocking(False)  # Set to non-blocking
-        buffer = b""
-        while not self.shuttingdown:
-            readable, _, _ = select.select([client_socket], [], [], 1)
-            if readable:
-                data = client_socket.recv(1024)
-                if not data:
-                    # Client disconnected
-                    for bot_id, socket in list(self.client_sockets.items()):
-                        if socket == client_socket:
-                            del self.client_sockets[bot_id]
-                    break
-                buffer += data
-                while b'\n' in buffer:
-                    message, buffer = buffer.split(b'\n', 1)
-                    self.process_message(message, client_socket)
-
-    def process_message(self, message, client_socket):
+    def process_message(self, request, client_address, server):
         try:
-            message = json.loads(message)
-            if 'bot_id' in message:
-                bot_id = message['bot_id']
-                if bot_id in self.client_sockets:
-                    # If bot_id is already in client_sockets, validate that it matches the bot_id associated with the client_socket
-                    if self.client_sockets[bot_id] != client_socket:
-                        logging.error(f"Received message with bot_id {bot_id} from unexpected client_socket")
+            data = request.recv(1024).strip()
+            message = json.loads(data.decode('utf-8'))
+            logging.info(f"Received message: {message}")
+            bot_id = message.get('bot_id')
+            if bot_id:
+                if bot_id in self.client_sockets and self.client_sockets[bot_id] != request:
+                    logging.error(f"Received message with bot_id {bot_id} from unexpected client_socket")
                 else:
                     # If bot_id is not in client_sockets, add it
-                    self.client_sockets[bot_id] = client_socket
+                    self.client_sockets[bot_id] = request
             else:
                 logging.error(f"Received message without bot_id: {message}")
         except json.JSONDecodeError:
             logging.error(f"Failed to decode message: {message}")
+
+    def send_message(self, bot_id, message):
+        if bot_id in self.client_sockets:
+            self.client_sockets[bot_id].sendall(message.encode('utf-8'))
+        else:
+            logging.error(f"No client connection found for bot_id {bot_id}")
 
     def load_configuration(self):
         """Load configurations from config.json."""
@@ -311,14 +295,25 @@ class Manager:
             logging.error(f"Failed to start bot {bot_id}: {e}")
 
     def stop_bot(self, bot_id):
-        """Stop a bot by sending a stop message over the socket."""
+        """Stop a bot process."""
+        if bot_id not in self.bot_processes or self.bot_processes[bot_id].poll() is not None:
+            logging.error(f"Bot {bot_id} is not running.")
+            return
         try:
-            if bot_id in self.client_sockets:
-                message = {"command": "stop"}
-                message_bytes = json.dumps(message).encode("utf-8")
-                self.client_sockets[bot_id].sendall(message_bytes)
+            # Send a stop message to the bot
+            self.send_message(bot_id, json.dumps({"command": "stop"}))
+            # Wait for the bot to finish its operation
+            for _ in range(10):  # Wait for up to 10 seconds
+                if self.bot_processes[bot_id].poll() is not None:
+                    break
+                time.sleep(1)
+            else:
+                # If the bot is still running after 10 seconds, forcefully terminate it
+                self.bot_processes[bot_id].terminate()
+                self.bot_processes[bot_id].wait(timeout=5)
+            logging.info(f"Stopped bot {bot_id}")
         except Exception as e:
-            logging.error(f"Failed to stop bot {bot_id}. Reason: {e}")
+            logging.error(f"Failed to stop bot {bot_id}: {e}")
 
     def kill_bot(self, bot_id):
         # Load the data from the file
@@ -345,21 +340,12 @@ class Manager:
             logging.error(f"No information found for bot {bot_id}")
 
     def shutdown(self):
-        """Shutdown the manager and stop all bots if stopBotsOnShutdown is True."""
+        """Shutdown the manager. Stop all bots if the stop_bots_on_shutdown configuration option is set."""
         self.shuttingdown = True
-        try:
-            with open('config.json', 'r') as f:
-                config = json.load(f)
-        except Exception as e:
-            logging.error(f"Failed to load configuration: {e}")
-            return
-        stop_bots_on_shutdown = config.get("Manager", {}).get("stopBotsOnShutdown", False)
-        if stop_bots_on_shutdown:
-            for bot_id, bot_process in self.bot_processes.items():
-                if bot_process.poll() is None:
-                    bot_process.terminate()
-                    logging.info(f"Stopped bot {bot_id}")
-        self.root.quit() # Escape the GUI mainloop
+        if self.config.get("Manager", {}).get("stop_bots_on_shutdown", False):
+            for bot_id in self.bot_processes.keys():
+                self.stop_bot(bot_id)
+        self.root.destroy()
 
     def open_log(self, bot_id):
         """Open the log file for a bot in Notepad++ or Notepad."""
