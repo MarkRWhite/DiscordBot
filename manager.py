@@ -15,7 +15,7 @@ class Manager:
     def __init__(self):
         self.bot_processes = {}
         self.client_sockets = {}
-        self.client_sockets_lock = threading.RLock()  # Add a lock for client_sockets thread safety
+        self.client_sockets_lock = threading.RLock()  # Add a re-entrant lock for client_sockets thread safety
         self.shuttingdown = False
         self.configure_logging()
         self.load_configuration()
@@ -33,33 +33,37 @@ class Manager:
         self.root.mainloop()  # Start the GUI (BLOCKING)
         
         # Wait for server thread to finish
-        #TODO: Stop bot processes
+        #TODO: Stop bot processes if configured to do so
         self.server.shutdown()
         self.server_thread.join()
 
     def process_message(self, request, client_address, server):
-        request.settimeout(5.0)
         try:
-            data = request.recv(1024).strip()
-            message = json.loads(data.decode('utf-8'))
-            logging.info(f"Received message: {message}")
-            bot_id = message.get('bot_id')
-            if bot_id:
-                with self.client_sockets_lock:  # Acquire the lock before accessing client_sockets
-                    if bot_id in self.client_sockets and self.client_sockets[bot_id] != request:
-                        logging.error(f"Received message with bot_id {bot_id} from unexpected client_socket")
+            while not self.shuttingdown:
+                data = request.recv(1024).strip()
+                if not data:
+                    break
+                try:
+                    message = json.loads(data.decode('utf-8'))
+                except json.JSONDecodeError:
+                    logging.error(f"Failed to decode message: {data}")
+                    continue
+                logging.info(f"Received message: {message}")
+                if isinstance(message, dict):
+                    bot_id = message.get('bot_id')
+                    if bot_id:
+                        with self.client_sockets_lock:  # Acquire the lock before accessing client_sockets
+                            if bot_id in self.client_sockets and self.client_sockets[bot_id] != request:
+                                logging.error(f"Received message with bot_id {bot_id} from unexpected client_socket")
+                            else:
+                                self.client_sockets[bot_id] = request
+                        self.send_message(bot_id, 'OK')
                     else:
-                        # If bot_id is not in client_sockets, add it
-                        self.client_sockets[bot_id] = request
-                        if message.get('status') == 'connected':
-                            # Send an 'OK' message back to the bot
-                            self.send_message(bot_id, 'OK')
-            else:
-                logging.error(f"Received message without bot_id: {message}")
-        except json.JSONDecodeError:
-            logging.error(f"Failed to decode message: {message}")
-        except socket.timeout:
-            logging.error("Client did not send data within the timeout period")
+                        logging.error(f"Received message without bot_id: {message}")
+                else:
+                    logging.error(f"Received non-dict message: {message}")
+        except Exception as e:
+            logging.error(f"An error occurred: {e}")
 
     def send_message(self, bot_id, message):
         logging.info(f"Sending message to bot {bot_id}: {message}")
@@ -272,10 +276,9 @@ class Manager:
             command = [python_path] + [f"{bot_config['type']}.py", "--bot_id", bot_id]
 
             # Start the bot process
-            print("DEBUG PATH: " + ' '.join(command))
             bot_process = subprocess.Popen(command)
             self.bot_processes[bot_id] = bot_process
-            logging.info(f"Started bot {bot_id}")
+            logging.info(f"Started bot {bot_id} with process id {bot_process.pid}")
         except Exception as e:
             logging.error(f"Failed to start bot {bot_id}: {e}")
 

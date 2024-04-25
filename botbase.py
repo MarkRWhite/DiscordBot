@@ -164,7 +164,7 @@ class BotBase(ABC):
         if self.manager_socket:
             shutdown_message = {"status": "shutdown", "bot_id": self.bot_id}
             try:
-                self.manager_socket.sendall(json.dumps(shutdown_message).encode("utf-8"))
+                self.send_message(shutdown_message)
             except Exception as e:
                 logging.error(f"Error sending message: {e}")
 
