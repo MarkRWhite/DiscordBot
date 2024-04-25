@@ -35,7 +35,7 @@ class BotBase(ABC):
         # Setup communication with the manager
         self.manager_socket = self.create_socket() if self.server_address else None
         if self.manager_socket:
-            self.send_connected_message() 
+            self.start_communication_thread()
         else:
             logging.info("No server address provided. Running without a Manager.")
 
@@ -45,6 +45,34 @@ class BotBase(ABC):
             raise ValueError(f"Environment variable {self.config.get("envtoken")} is not set.")
 
         self.setup_discord()
+
+    def start_communication_thread(self):
+        self.communication_thread = threading.Thread(target=self.communication_loop)
+        self.communication_thread.start()
+
+    def communication_loop(self):
+        connected_message = json.dumps({"status": "connected", "bot_id": self.bot_id})
+        self.send_message(connected_message)
+        while self.running:
+            try:
+                message = self.manager_socket.recv(1024).decode('utf-8')
+                if message and message != 'OK':
+                    self.process_message(json.loads(message))
+            except Exception as e:
+                logging.error(f"Error receiving message: {e}")
+                break
+
+        logging.info("Communication thread is stopping.")
+
+    def send_message(self, message):
+        if self.manager_socket:
+            try:
+                self.manager_socket.sendall(json.dumps(message).encode("utf-8"))
+                response = self.manager_socket.recv(1024).decode('utf-8')
+                if response != 'OK':
+                    logging.error(f"Message not received by manager properly: {response}")
+            except Exception as e:
+                logging.error(f"Error sending message: {e}")
 
     def create_socket(self):
         try:
@@ -70,7 +98,7 @@ class BotBase(ABC):
         self.running = True
         self.discord_run()
 
-        # Main Run Loop
+        logging.info(f"Bot is running.")
         while self.running:
             self.main_loop()
             time.sleep(0.5)
@@ -79,18 +107,7 @@ class BotBase(ABC):
 
     @abstractmethod
     def main_loop(self):
-        pass # TODO: Main loop code actions go here
-
-    def send_connected_message(self):
-        if self.manager_socket:
-            status_message = {"status": "connected", "bot_id": self.bot_id}
-            try:
-                self.manager_socket.sendall(json.dumps(status_message).encode("utf-8"))
-                response = self.manager_socket.recv(1024).decode('utf-8')
-                if response != 'OK':
-                    logging.error(f"Failed to connect to manager: {response}")
-            except Exception as e:
-                logging.error(f"Error sending message: {e}")
+        pass # TODO: # Override in base class to implement custom behavior
 
     @abstractmethod
     def process_message(self, message):
@@ -133,7 +150,8 @@ class BotBase(ABC):
 
     @abstractmethod
     async def on_ready(self):
-        print(f"We have logged in as {self.bot.user}")
+        # Called by discord when the bot is ready
+        logging.info(f"We have logged in as {self.bot.user}")
 
     @commands.command()
     async def hello(self, ctx):
@@ -141,6 +159,8 @@ class BotBase(ABC):
 
     @abstractmethod
     def shutdown(self):
+        '''Shutdown the bot.'''
+        logging.info("Shutting down the bot.")
         if self.manager_socket:
             shutdown_message = {"status": "shutdown", "bot_id": self.bot_id}
             try:
@@ -150,6 +170,12 @@ class BotBase(ABC):
 
         self.running = False
         self.discord_stop()
+
+        if self.communication_thread.is_alive():
+            self.communication_thread.join(timeout=5)  # wait for the communication thread to finish
+
+        if self.communication_thread.is_alive():
+            logging.error("Failed to stop the communication thread within the timeout period.")
 
     def discord_run(self):
         logging.info("Starting the bot.")

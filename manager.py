@@ -15,7 +15,7 @@ class Manager:
     def __init__(self):
         self.bot_processes = {}
         self.client_sockets = {}
-        self.client_sockets_lock = threading.Lock()  # Add a lock for client_sockets thread safety
+        self.client_sockets_lock = threading.RLock()  # Add a lock for client_sockets thread safety
         self.shuttingdown = False
         self.configure_logging()
         self.load_configuration()
@@ -62,6 +62,7 @@ class Manager:
             logging.error("Client did not send data within the timeout period")
 
     def send_message(self, bot_id, message):
+        logging.info(f"Sending message to bot {bot_id}: {message}")
         with self.client_sockets_lock:  # Acquire the lock before accessing client_sockets
             if bot_id in self.client_sockets:
                 try:
