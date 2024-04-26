@@ -41,15 +41,15 @@ class Manager:
         """Process thread loop for each client connection."""
         try:
             while not self.shuttingdown:
-                message = self.request_socket.recv(1024).decode('utf-8')
+                message = request_socket.recv(1024).decode('utf-8')
                 if message:
                     message_dict = json.loads(message)
                     bot_id = message_dict.get('bot_id')
                     if message_dict.get('status') == 'OK':
                         logging.info(f"Received ACK from bot {bot_id}")
                     elif message_dict.get('status') != 'OK':
-                        self.manager_socket.sendall('OK'.encode('utf-8')) # ACK
-                        self.process_message( request_socket, message_dict, bot_id)
+                        request_socket.sendall('OK'.encode('utf-8')) # ACK
+                        self.process_message(request_socket, message_dict, bot_id)
         except Exception as e:
             logging.error(f"An error occurred: {e}")
 
@@ -277,9 +277,10 @@ class Manager:
         except Exception as e:
             logging.error(f"Failed to start bot {bot_id}: {e}")
 
-    def stop_bot(self, bot_id, timeout=5):
+    def stop_bot(self, bot_id, timeout=20):
         """Stop a bot process."""
         with self.client_sockets_lock:  # Acquire the lock before accessing client_sockets
+            logging.info(f"Requesting {bot_id} stop.")
             if bot_id in self.client_sockets:
                 try:
                     self.send_message(bot_id, json.dumps({"command": "stop"}))

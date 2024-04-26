@@ -23,7 +23,8 @@ class BotBase(ABC):
 
     def __init__(self, bot_id=None):
         self.bot_id = bot_id or self.__class__.__name__
-        self.running = False
+        self.bot_thread = None
+        self._running = False
         self.manager_socket = None # Socket to communicate with Manager
         self.ack_condition = threading.Condition() # Condition to wait for message ACK from Manager
         self.message_queue = Queue() # Queue for incoming messages
@@ -44,37 +45,40 @@ class BotBase(ABC):
         if not self.TOKEN:
             raise ValueError(f"Environment variable {self.config.get("envtoken")} is not set.")
 
-        self.setup_discord()
+        self.discord_setup()
 
     def start_communication_thread(self):
         self.communication_thread = threading.Thread(target=self.communication_loop)
         self.communication_thread.start()
 
     def communication_loop(self):
-        while self.running:
-            try:
-                message = self.manager_socket.recv(1024).decode('utf-8')
-                if message and message != 'OK':
-                    ack_message = json.dumps({"status": "OK", "bot_id": self.bot_id})
-                    self.manager_socket.sendall(ack_message.encode('utf-8')) # ACK
-                    with self.queue_lock: # Acquire the lock before adding to the queue
-                        self.message_queue.put(json.loads(message)) # Add message to the queue
-                elif message == 'OK':
-                    if self.waiting_for_ack:
-                        logging.info("Received ACK from Manager.")
-                    else:
-                        logging.warning("Received unexpected ACK from Manager.")
-                    with self.ack_condition:
-                        self.waiting_for_ack = False # Release the ACK condition
-                        self.ack_condition.notify_all()
-            except Exception as e:
-                logging.error(f"Error receiving message: {e}")
-                break
+        while self._running:
+            ready_to_read, _, _ = select.select([self.manager_socket], [], [], 1)
+            if ready_to_read:
+                try:
+                    message = self.manager_socket.recv(1024).decode('utf-8')
+                    if message and message != 'OK':
+                        ack_message = json.dumps({"status": "OK", "bot_id": self.bot_id})
+                        self.manager_socket.sendall(ack_message.encode('utf-8')) # ACK
+                        with self.queue_lock: # Acquire the lock before adding to the queue
+                            self.message_queue.put(json.loads(message)) # Add message to the queue
+                    elif message == 'OK':
+                        if self.waiting_for_ack:
+                            logging.info("Received ACK from Manager.")
+                        else:
+                            logging.warning("Received unexpected ACK from Manager.")
+                        with self.ack_condition:
+                            self.waiting_for_ack = False # Release the ACK condition
+                            self.ack_condition.notify_all()
+                except Exception as e:
+                    logging.error(f"Error receiving message: {e}")
+                    break
 
         logging.info("Communication thread is stopping.")
 
     def send_message(self, json):
         if self.manager_socket:
+            logging.info(f"Sending message: {json}")
             try:
                 self.manager_socket.sendall(json.encode('utf-8'))
                 self.wait_for_ack()
@@ -109,7 +113,7 @@ class BotBase(ABC):
         return config
 
     def run(self):
-        self.running = True
+        self._running = True
 
         # Setup communication with the manager
         self.manager_socket = self.create_socket() if self.server_address else None
@@ -123,7 +127,7 @@ class BotBase(ABC):
         self.discord_run()
 
         logging.info(f"Bot is running.")
-        while self.running:
+        while self._running:
             with self.queue_lock: # Acquire the lock before accessing the queue
                 if not self.message_queue.empty():
                     message = self.message_queue.get()
@@ -156,12 +160,6 @@ class BotBase(ABC):
         config["handlers"]["default"]["filename"] = os.path.join(logs_dir, f"{date}_{self.bot_id}.log")
         logging.config.dictConfig(config)
 
-    def setup_discord(self):
-        intents = discord.Intents.default()
-        intents.message_content = True
-        self.bot = commands.Bot(command_prefix="!", intents=intents)
-        self.initialize_bot_commands()
-
     @abstractmethod
     def initialize_bot_commands(self):
         # Add defaults
@@ -189,14 +187,7 @@ class BotBase(ABC):
     def shutdown(self):
         '''Shutdown the bot.'''
         logging.info("Shutting down the bot.")
-        if self.manager_socket:
-            shutdown_message = json.dumps({"status": "shutdown", "bot_id": self.bot_id})
-            try:
-                self.send_message(shutdown_message)
-            except Exception as e:
-                logging.error(f"Error sending message: {e}")
-
-        self.running = False
+        self._running = False
         self.discord_stop()
 
         if self.communication_thread.is_alive():
@@ -205,17 +196,30 @@ class BotBase(ABC):
         if self.communication_thread.is_alive():
             logging.error("Failed to stop the communication thread within the timeout period.")
 
+    def discord_setup(self):
+        intents = discord.Intents.default()
+        intents.message_content = True
+        self.bot = commands.Bot(command_prefix="!", intents=intents)
+        self.initialize_bot_commands()
+
     def discord_run(self):
         logging.info("Starting the bot.")
-        self.bot_thread = threading.Thread(
-            target=self.bot.run, args=(self.TOKEN,)
-        )  # create a new thread to run the bot
-        self.bot_thread.start()  # start the thread
+        if self.bot_thread is None or not self.bot_thread.is_alive():
+            self.bot_thread = threading.Thread(
+                target=self.bot.run, args=(self.TOKEN,)
+            )  # create a new thread to run the bot
+            self.bot_thread.start()  # start the thread
+        else:
+            logging.error("The bot thread is already running.")
 
     def discord_stop(self):
-        if not self.bot.loop.is_closed():
-            logging.info("Stopping the bot.")
-            self.bot.loop.create_task(self.bot.close())
+        if self.bot.is_closed():
+            logging.info("Bot is already stopped.")
+            return
+
+        logging.info("Stopping the bot.")
+        loop = asyncio.get_event_loop()
+        loop.run_until_complete(self.bot.close())
 
         if self.bot_thread.is_alive():
             self.bot_thread.join(timeout=5)  # wait for the bot thread to finish
