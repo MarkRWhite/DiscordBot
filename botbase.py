@@ -221,8 +221,8 @@ class BotBase(ABC):
         loop = asyncio.get_event_loop()
         loop.run_until_complete(self.bot.close())
 
-        if self.bot_thread.is_alive():
-            self.bot_thread.join(timeout=5)  # wait for the bot thread to finish
+        #if self.bot_thread.is_alive():
+        #    self.bot_thread.join(timeout=5)  # wait for the bot thread to finish
 
         if self.bot_thread.is_alive():
             logging.error("Failed to stop the bot thread within the timeout period.")

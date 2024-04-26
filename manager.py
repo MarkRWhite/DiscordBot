@@ -277,7 +277,7 @@ class Manager:
         except Exception as e:
             logging.error(f"Failed to start bot {bot_id}: {e}")
 
-    def stop_bot(self, bot_id, timeout=20):
+    def stop_bot(self, bot_id, timeout=3):
         """Stop a bot process."""
         with self.client_sockets_lock:  # Acquire the lock before accessing client_sockets
             logging.info(f"Requesting {bot_id} stop.")
